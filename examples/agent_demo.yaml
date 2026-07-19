@@ -1,0 +1,51 @@
+version: 1
+name: agent_demo
+description: >
+  Live LLM demo — an agent with a validated JSON schema writes a haiku,
+  a router branches on its mood. Adjust `providers`/`model` for your box.
+
+providers:
+  local: { base_url: "http://localhost:8000/v1", protocol: openai }
+
+config:
+  max_steps: 15
+  budget: { tokens: 20000, deadline: 5m }
+
+state:
+  topic: { type: str, default: "terminal user interfaces" }
+  haiku: { type: str, default: "" }
+
+entry: [write]
+
+nodes:
+  - id: write
+    type: agent
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    system: "You are a concise poet."
+    prompt: "Write a haiku about <state.topic>."
+    output_schema: { haiku: str, mood: str }
+    validation: { reasks: 2 }
+    timeout: 120s
+    updates: { haiku: "<self.haiku>" }
+
+  - id: judge
+    type: router
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    prompt: "Haiku: <state.haiku>\nWhat is the mood of this haiku?"
+    options:
+      celebrate: "the haiku's mood is positive or serene"
+      console: "the haiku's mood is negative or melancholic"
+    timeout: 120s
+
+  - id: celebrate
+    type: shell
+    command: ["echo", "Nice haiku! <state.haiku>"]
+
+  - id: console
+    type: shell
+    command: ["echo", "It will be okay. <state.haiku>"]
+
+edges:
+  - { from: write, to: judge }
+  - { from: celebrate, to: end }
+  - { from: console, to: end }

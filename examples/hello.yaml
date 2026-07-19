@@ -1,0 +1,68 @@
+version: 1
+name: hello
+description: >
+  LLM-free tour of the engine: parallel fan-out, merge with a success
+  threshold, map over a collection, a counted loop, and shell output.
+
+config:
+  max_steps: 20
+  max_concurrency: 4
+
+state:
+  name:   { type: str, default: world }
+  count:  { type: int, default: 0 }
+  shouts: { type: list, reducer: extend, default: [] }
+
+entry: [greet, sysinfo]
+
+nodes:
+  - id: greet
+    type: shell
+    command: ["echo", "Hello, <state.name>!"]
+
+  - id: sysinfo
+    type: function
+    handler: "graphx.demo:sysinfo"
+
+  - id: gather
+    type: merge
+    success_threshold: 1
+
+  - id: split
+    type: function
+    handler: "graphx.demo:split_words"
+    args: { text: "<greet.stdout>" }
+
+  - id: shout_each
+    type: map
+    over: "<split.words>"
+    item_as: word
+    node: { type: function, handler: "graphx.demo:upper", args: { word: "<item.word>" } }
+    collect: { channel: shouts }
+
+  - id: bump
+    type: function
+    handler: "graphx.demo:increment"
+    args: { count: "<state.count>" }
+    updates: { count: "<self.count>" }
+
+  - id: again
+    type: condition
+    branches:
+      - { if: "count < 3", goto: bump }
+      - { else: done }
+    max_iterations: 5
+    on_exhausted: done
+
+  - id: done
+    type: shell
+    command: ["echo", "done: count=<state.count>, shouts=<state.shouts>"]
+
+edges:
+  - { from: greet,      to: gather }
+  - { from: sysinfo,    to: gather }
+  - { from: gather,     to: split }
+  - { from: split,      to: shout_each }
+  - { from: shout_each, to: bump }
+  - { from: bump,       to: again }
+  - { from: done,       to: end }

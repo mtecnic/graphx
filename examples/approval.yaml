@@ -1,0 +1,38 @@
+version: 1
+name: approval
+description: Human-in-the-loop demo — a gate that parks the run until answered.
+
+state:
+  doc:    { type: str, default: "" }
+  result: { type: str, default: "" }
+
+entry: [draft]
+
+nodes:
+  - id: draft
+    type: shell
+    command: ["echo", "This is the draft document."]
+    updates: { doc: "<self.stdout>" }
+
+  - id: gate
+    type: human
+    prompt: "Publish this draft?"
+    choices: [approve, reject]
+    payload: { doc: "<state.doc>" }
+
+  - id: publish
+    type: shell
+    command: ["echo", "PUBLISHED"]
+    updates: { result: "<self.stdout>" }
+
+  - id: discard
+    type: shell
+    command: ["echo", "DISCARDED"]
+    updates: { result: "<self.stdout>" }
+
+edges:
+  - { from: draft, to: gate }
+  - { from: gate, to: publish, when: "gate.choice == 'approve'" }
+  - { from: gate, to: discard, when: "gate.choice == 'reject'" }
+  - { from: publish, to: end }
+  - { from: discard, to: end }
