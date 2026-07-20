@@ -18,6 +18,14 @@ HELLO = Path(__file__).parents[2] / "examples" / "hello.yaml"
 load_builtin_nodes()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_discovery(tmp_path_factory, monkeypatch):
+    # keep the discovery worker away from the real cache, LAN, and network
+    monkeypatch.setenv("GRAPHX_HOME", str(tmp_path_factory.mktemp("gxhome")))
+    monkeypatch.setenv("GRAPHX_NO_LAN_SCAN", "1")
+    monkeypatch.setenv("GRAPHX_NO_DISCOVERY", "1")
+
+
 @pytest.fixture()
 def hello_graph():
     return load_graph(HELLO)
@@ -75,13 +83,85 @@ class TestApp:
             await pilot.press("tab")
             assert app.selected != first
 
+    async def test_new_workflow_via_n_key(self, hello_graph, tmp_path, monkeypatch):
+        import shutil
+        monkeypatch.setenv("GRAPHX_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("GRAPHX_NO_LAN_SCAN", "1")
+        wf = tmp_path / "hello.yaml"
+        shutil.copy(HELLO, wf)
+        app = GraphxApp(hello_graph, workflow_path=wf)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.click("#wf-name")
+            for ch in "fresh":
+                await pilot.press(ch)
+            await pilot.click("#template-list")
+            await pilot.press("enter")          # first option: blank
+            await pilot.pause()
+            assert (tmp_path / "fresh.yaml").exists()
+            assert app.graph.name == "fresh"
+            assert app.workflow_path == tmp_path / "fresh.yaml"
+
+    async def test_add_node_offers_discovered_models(self, hello_graph, tmp_path):
+        import time as _time
+
+        from graphx.llm.discovery import Endpoint
+        from graphx.tui.palette import AddNodeScreen
+        app = GraphxApp(hello_graph, workflow_path=HELLO)
+        app.endpoints = [Endpoint(base_url="http://127.0.0.1:8000/v1",
+                                  kind="openai", host="127.0.0.1", port=8000,
+                                  models=("test-model",), checked_at=_time.time())]
+        async with app.run_test(size=(120, 45)) as pilot:
+            app._palette_add_node()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, AddNodeScreen)
+            option_list = screen.query_one("#model-list")
+            assert option_list.option_count == 1
+            await pilot.click("#model-list")
+            await pilot.press("enter")
+            area = screen.query_one("#config-area")
+            assert "model: openai_local_8000/test-model" in area.text
+            await pilot.press("escape")
+
+    async def test_add_agent_node_injects_provider(self, tmp_path, monkeypatch):
+        import shutil
+        import time as _time
+
+        from graphx.llm.discovery import Endpoint
+        from graphx.model.yaml_loader import load_graph
+        wf = tmp_path / "hello.yaml"
+        shutil.copy(HELLO, wf)
+        app = GraphxApp(load_graph(wf), workflow_path=wf)
+        app.endpoints = [Endpoint(base_url="http://127.0.0.1:8000/v1", kind="openai",
+                                  host="127.0.0.1", port=8000, models=("qwen-x",),
+                                  checked_at=_time.time())]
+        async with app.run_test(size=(120, 45)) as pilot:
+            node = {"id": "ai", "type": "agent",
+                    "model": "openai_local_8000/qwen-x", "prompt": "hi"}
+            provider = app._provider_for_model(node)
+            assert provider[0] == "openai_local_8000"
+
+            def mutate(w):
+                w.add_node(node, after="greet")
+                w.set_provider(*provider)
+            app._mutate(mutate)
+            await pilot.pause()
+        graph = load_graph(wf)
+        assert "ai" in graph.nodes
+        assert graph.providers["openai_local_8000"]["base_url"] == \
+            "http://127.0.0.1:8000/v1"
+
     async def test_full_run_inside_tui(self, hello_graph, tmp_path):
         app = GraphxApp(hello_graph, workflow_path=HELLO,
                         db_path=tmp_path / "test.db")
         async with app.run_test(size=(120, 45)) as pilot:
             await pilot.press("r")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            for _ in range(200):                  # poll: the run worker sets running=False
+                await pilot.pause()
+                if not app.running and app.statuses.get("done") == "ok":
+                    break
             assert app.statuses.get("done") == "ok"
             assert app.statuses.get("again") == "ok"
             assert not app.running

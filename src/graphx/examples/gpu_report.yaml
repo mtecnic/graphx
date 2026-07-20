@@ -1,0 +1,104 @@
+version: 1
+name: gpu_report
+description: >
+  Real-world demo: probe this host (GPUs, disk, inference server) in
+  parallel, have a local LLM write a health report, branch on severity
+  with a human acknowledgement gate, and save the report to disk.
+  Adjust `providers`/`model` if your inference server differs.
+
+providers:
+  local: { base_url: "http://localhost:8000/v1", protocol: openai }
+
+config:
+  max_steps: 15
+  max_concurrency: 4
+  budget: { tokens: 30000, deadline: 5m }
+
+state:
+  report: { type: str, default: "" }
+  health: { type: str, default: "unknown" }
+
+entry: [gpu_stats, disk, inference_api]
+
+nodes:
+  # ---- probes (parallel fan-out) ----
+  - id: gpu_stats
+    type: shell
+    command: ["nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total", "--format=csv,noheader"]
+    timeout: 15s
+    retry: { attempts: 2 }
+
+  - id: disk
+    type: shell
+    command: ["df", "-h", "/"]
+    timeout: 10s
+
+  - id: inference_api
+    type: api
+    method: GET
+    url: "http://localhost:8000/v1/models"
+    output: { first_model: "$.data[0].id" }
+    timeout: 10s
+    retry: { attempts: 2, base: 1s }
+
+  # ---- join: proceed if at least the GPU probe worked ----
+  - id: gather
+    type: merge
+    success_threshold: 1
+
+  # ---- analysis ----
+  - id: summarize
+    type: agent
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    system: >
+      You are a sysadmin writing a terse morning health report for a
+      Linux GPU inference host. Be specific; use the numbers given.
+    prompt: |
+      GPU stats (name, temp C, util, mem used, mem total):
+      <gpu_stats.stdout>
+      Root disk:
+      <disk.stdout>
+      Inference server model loaded: <inference_api.first_model>
+
+      Write a short markdown report (5-8 lines). Then classify overall
+      health: "good" if nothing needs attention, "warning" if something
+      should be watched (e.g. disk >80%, GPU temp >85C), "critical" if
+      action is needed now.
+    output_schema: { report: str, health: str }
+    validation: { reasks: 2 }
+    fallbacks:
+      - static:
+          report: "LLM unavailable — raw probe data is in the run state/logs."
+          health: "unknown"
+    timeout: 180s
+    budget: { tokens: 20000 }
+    updates: { report: "<self.report>", health: "<self.health>" }
+
+  # ---- branch on severity ----
+  - id: triage
+    type: condition
+    branches:
+      - { if: "health == 'good' or health == 'unknown'", goto: save_report }
+      - { else: acknowledge }
+
+  - id: acknowledge
+    type: human
+    prompt: "Health check flagged issues — acknowledge before saving?"
+    choices: [acknowledge, ignore]
+    payload: { health: "<state.health>", report: "<state.report>" }
+
+  # ---- persist ----
+  - id: save_report
+    type: shell
+    command: ["tee", ".graphx/gpu_report.md"]
+    stdin: "<state.report>"
+
+edges:
+  - { from: gpu_stats,     to: gather }
+  - { from: disk,          to: gather }
+  - { from: inference_api, to: gather }
+  - { from: gather,        to: summarize }
+  - { from: summarize,     to: triage }
+  - { from: acknowledge,   to: save_report, when: "acknowledge.choice == 'acknowledge'" }
+  - { from: acknowledge,   to: end,         when: "acknowledge.choice == 'ignore'" }
+  - { from: save_report,   to: end }
