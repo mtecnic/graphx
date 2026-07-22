@@ -25,6 +25,61 @@ app = typer.Typer(help="TUI-native designer and runner for agentic workflows.",
                   no_args_is_help=True, pretty_exceptions_show_locals=False)
 console = Console(stderr=False)
 
+secret_app = typer.Typer(help="Manage stored credentials (referenced as secret://NAME).",
+                         no_args_is_help=True)
+app.add_typer(secret_app, name="secret")
+
+
+@secret_app.command("set")
+def secret_set(name: Annotated[str, typer.Argument(help="secret name")],
+               value: Annotated[str | None, typer.Option(help="value (omit for a hidden "
+                                                         "prompt; use --stdin to pipe)")] = None,
+               stdin: Annotated[bool, typer.Option("--stdin", help="read value from stdin")] = False,
+               ) -> None:
+    """Store a secret (value never echoed)."""
+    from .secrets import SecretStore
+    if stdin:
+        value = sys.stdin.readline().rstrip("\n")
+    elif value is None:
+        value = typer.prompt(f"value for {name}", hide_input=True)
+    if not value:
+        console.print("[red]empty value[/red]")
+        raise typer.Exit(code=1)
+    store = SecretStore()
+    try:
+        store.set(name, value)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]✔[/green] stored [bold]{name}[/bold] "
+                  f"[dim]({store.backend()} backend)[/dim]")
+
+
+@secret_app.command("list")
+def secret_list() -> None:
+    """List stored secret NAMES (never values)."""
+    from .secrets import SecretStore
+    store = SecretStore()
+    names = store.names()
+    console.print(f"[dim]backend: {store.backend()}[/dim]")
+    if not names:
+        hint = "" if store.backend() == "file" else " (keyring can't enumerate names)"
+        console.print(f"[yellow]no stored secrets{hint}[/yellow]")
+        return
+    for name in names:
+        console.print(f"  [bold]{name}[/bold]  [dim]secret://{name}[/dim]")
+
+
+@secret_app.command("rm")
+def secret_rm(name: Annotated[str, typer.Argument(help="secret name")]) -> None:
+    """Delete a stored secret."""
+    from .secrets import SecretStore
+    if SecretStore().delete(name):
+        console.print(f"[green]✔[/green] removed [bold]{name}[/bold]")
+    else:
+        console.print(f"[yellow]no stored secret '{name}'[/yellow]")
+        raise typer.Exit(code=1)
+
 _STATUS_STYLE = {
     EventType.NODE_STARTED: ("cyan", "▶"),
     EventType.NODE_FINISHED: ("green", "✔"),
@@ -94,12 +149,40 @@ def _load(workflow: Path):
     return graph
 
 
+def _graph_secret_refs(graph) -> set[str]:
+    from .secrets import find_secret_refs
+    names: set[str] = set()
+    for node in graph.nodes.values():
+        names |= find_secret_refs(dict(node.config))
+    names |= find_secret_refs(dict(graph.providers))
+    names |= find_secret_refs(dict(graph.mcp_servers))
+    return names
+
+
+def _check_secrets(graph) -> None:
+    """Fail fast if a workflow references secrets that aren't set anywhere."""
+    from .secrets import SecretResolver
+    missing = SecretResolver().missing(_graph_secret_refs(graph))
+    if missing:
+        console.print("[red]missing secret(s):[/red] " + ", ".join(missing))
+        for name in missing:
+            console.print(f"  set it with: [bold]graphx secret set {name}[/bold]")
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def validate(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)]) -> None:
     """Statically check a workflow file."""
     graph = _load(workflow)
     console.print(f"[green]✔[/green] {graph.name}: {len(graph.nodes)} nodes, "
                   f"{len(graph.edges)} edges, entry={list(graph.entry)}")
+    refs = _graph_secret_refs(graph)
+    if refs:
+        from .secrets import SecretResolver
+        missing = set(SecretResolver().missing(refs))
+        for name in sorted(refs):
+            mark = "[red]unset[/red]" if name in missing else "[green]set[/green]"
+            console.print(f"  secret://{name}  {mark}")
 
 
 async def _run_loop(graph, thread_id: str, first_input: dict[str, Any] | Command,
@@ -174,6 +257,7 @@ def run(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
         ) -> None:
     """Run a workflow, streaming events."""
     graph = _load(workflow)
+    _check_secrets(graph)
     thread_id = thread or uuid4().hex[:12]
     outcome = asyncio.run(_run_loop(graph, thread_id, _parse_kv(input),
                                     db or default_db_path(), verbose, interactive))

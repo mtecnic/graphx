@@ -11,12 +11,15 @@ description: >
 providers:
   local: { base_url: "http://localhost:8000/v1", protocol: openai }
 
-# For fully autonomous runs, connect a Gmail MCP server and add fetch/
-# create-draft `mcp` nodes. One-time OAuth setup required, e.g.:
+# For fully autonomous runs, connect a Gmail MCP server (which owns its
+# own one-time OAuth) and add fetch / create-draft `mcp` nodes. Store the
+# token once with `graphx secret set gmail_token`; graphx injects it into
+# the server's env at spawn — it never touches this file.
 # mcp_servers:
 #   gmail:
 #     transport: stdio
 #     command: ["npx", "-y", "@gongrzhe/server-gmail-autoauth-mcp"]
+#     env: { GMAIL_OAUTH_TOKEN: "secret://gmail_token" }
 
 config:
   max_steps: 20

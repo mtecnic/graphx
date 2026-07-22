@@ -82,11 +82,13 @@ def _estimate_tokens(text: str) -> int:
 
 class LLMClient:
     def __init__(self, providers: Mapping[str, Any] | None = None,
-                 http: httpx.AsyncClient | None = None, timeout_s: float = 120.0):
+                 http: httpx.AsyncClient | None = None, timeout_s: float = 120.0,
+                 resolver: Any = None):
         merged = {k: dict(v) for k, v in DEFAULT_PROVIDERS.items()}
         for name, cfg in (providers or {}).items():
             merged.setdefault(name, {}).update(cfg or {})
         self.providers = merged
+        self._resolver = resolver          # SecretResolver, or None
         self._own_http = http is None
         self.http = http or httpx.AsyncClient(timeout=httpx.Timeout(timeout_s))
 
@@ -108,6 +110,12 @@ class LLMClient:
         headers = {"content-type": "application/json"}
         key_env = provider.get("api_key_env")
         key = os.environ.get(key_env, "") if key_env else ""
+        # a provider may instead set `api_key: secret://NAME` (or a literal)
+        raw_key = provider.get("api_key")
+        if raw_key and self._resolver is not None:
+            key = self._resolver.resolve(raw_key, strict=False) or key
+        elif raw_key:
+            key = str(raw_key)
         if provider.get("protocol") == "anthropic":
             headers["x-api-key"] = key
             headers["anthropic-version"] = ANTHROPIC_VERSION

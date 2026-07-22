@@ -69,7 +69,36 @@ block is written into the workflow so it stays self-contained. Press `n`
 for a new workflow from a template without leaving the TUI.
 `GRAPHX_NO_LAN_SCAN=1` restricts scanning to localhost.
 
-CLI: `new` · `providers` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
+## Secrets
+
+Credentials are referenced in workflows as `secret://NAME` and resolved
+**only at the point of use** (the outbound request, subprocess env, or
+MCP server) — never baked into the workflow file, and never written to
+checkpoints, the event log, SSE, or the TUI (a redaction net masks any
+value that slips into output). Store them once:
+
+```bash
+graphx secret set openai_key           # hidden prompt; or --value / --stdin
+graphx secret list                     # names only, never values
+```
+
+Stored 0600 in `~/.graphx/secrets.json` (or the OS keyring with the
+`[keyring]` extra). Resolution falls back to the process environment, so
+`secret://GITHUB_TOKEN` also picks up an exported `GITHUB_TOKEN`. Use in
+any node:
+
+```yaml
+- id: call
+  type: api
+  url: "https://api.example.com/data"
+  headers: { Authorization: "Bearer secret://api_key" }
+```
+
+`graphx run` refuses to start if a referenced secret is unset (with the
+exact `graphx secret set` command to fix it); the TUI (`k` opens the
+manager) prompts for any missing secret before a run.
+
+CLI: `new` · `providers` · `secret set/list/rm` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
 
 ## HTTP API
 

@@ -101,6 +101,7 @@ class GraphxApp(App):
         Binding("a", "add_node", "add node"),
         Binding("o", "add_api", "api from spec"),
         Binding("c", "connect", "connect"),
+        Binding("k", "secrets", "secrets"),
         Binding("d", "delete_node", "delete", show=False),
         Binding("p", "play_trace", "play trace", show=False),
     ]
@@ -122,6 +123,8 @@ class GraphxApp(App):
         self.last_outputs: dict[str, Any] = {}
         self.running = False
         self.endpoints: list = []      # discovered inference endpoints
+        from ..secrets import SecretStore
+        self.secret_store = SecretStore()
 
     # ------------------------------------------------------------- compose
 
@@ -300,7 +303,38 @@ class GraphxApp(App):
         if self.running:
             self.notify("a run is already in progress", severity="warning")
             return
+        self._run_with_secrets()
+
+    def _referenced_secrets(self) -> set[str]:
+        from ..secrets import find_secret_refs
+        names: set[str] = set()
+        for node in self.graph.nodes.values():
+            names |= find_secret_refs(dict(node.config))
+        names |= find_secret_refs(dict(self.graph.providers))
+        names |= find_secret_refs(dict(self.graph.mcp_servers))
+        return names
+
+    @work(exclusive=False)
+    async def _run_with_secrets(self) -> None:
+        from ..secrets import SecretResolver
+        from .palette import MissingSecretsScreen
+        missing = SecretResolver(self.secret_store).missing(self._referenced_secrets())
+        if missing:
+            filled = await self.push_screen_wait(
+                MissingSecretsScreen(missing, self.secret_store))
+            if not filled:
+                self.notify("run cancelled — credentials not provided",
+                            severity="warning")
+                return
         self.run_workflow()
+
+    @work(exclusive=False)
+    async def _open_secrets(self) -> None:
+        from .palette import SecretsScreen
+        await self.push_screen_wait(SecretsScreen(self.secret_store))
+
+    def action_secrets(self) -> None:
+        self._open_secrets()
 
     # ------------------------------------------------------------ palette
 
