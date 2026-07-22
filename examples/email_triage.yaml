@@ -1,0 +1,86 @@
+version: 1
+name: email_triage
+description: >
+  Classify incoming email and draft replies on a LOCAL model, then park
+  at a human gate so nothing is created without you. The `emails` input
+  is a list of {id, from, subject, body}; wire it to a Gmail MCP server
+  (see mcp_servers below) or pass it in via --input for testing.
+  Classification + drafting run on your own hardware — no mail content
+  leaves the box.
+
+providers:
+  local: { base_url: "http://localhost:8000/v1", protocol: openai }
+
+# For fully autonomous runs, connect a Gmail MCP server and add fetch/
+# create-draft `mcp` nodes. One-time OAuth setup required, e.g.:
+# mcp_servers:
+#   gmail:
+#     transport: stdio
+#     command: ["npx", "-y", "@gongrzhe/server-gmail-autoauth-mcp"]
+
+config:
+  max_steps: 20
+  max_concurrency: 3
+  budget: { tokens: 120000, deadline: 10m }
+
+state:
+  emails:  { type: list, default: [] }              # input: [{id, from, subject, body}]
+  triaged: { type: list, reducer: extend, default: [] }
+
+entry: [triage]
+
+nodes:
+  - id: triage
+    type: map
+    over: "<state.emails>"
+    item_as: email
+    max_concurrency: 3
+    node:
+      type: agent
+      model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+      system: >
+        You triage customer email for Cardboard Legacy, a small online
+        shop. Be accurate and concise. Draft replies in a warm, plain,
+        professional voice; never invent order numbers, prices, tracking,
+        or policies — if you lack a fact, write a placeholder in [brackets]
+        for the owner to fill in. Only set needs_reply for real customer
+        messages that warrant a personal response (not newsletters,
+        receipts, or spam).
+      prompt: |
+        From: <item.email.from>
+        Subject: <item.email.subject>
+        Body:
+        <item.email.body>
+
+        Classify this email and, if it needs a personal reply, draft one.
+      output_schema:
+        category: str        # order | shipping | question | wholesale | spam | other
+        priority: str        # high | normal | low
+        needs_reply: bool
+        draft_reply: str      # the reply text, or "" if needs_reply is false
+      validation: { reasks: 2 }
+      timeout: 120s
+    collect: { channel: triaged }
+
+  - id: compile
+    type: function
+    handler: "graphx.examples.email_tools:compile_triage"
+    args: { emails: "<state.emails>", triaged: "<state.triaged>" }
+
+  - id: review
+    type: human
+    prompt: "Review triage — create these drafts in Gmail?"
+    choices: [approve, skip]
+    payload: "<compile.summary>"
+
+  - id: save
+    type: shell
+    command: ["tee", ".graphx/email_drafts.json"]
+    stdin: "<compile.drafts>"
+
+edges:
+  - { from: triage,  to: compile }
+  - { from: compile, to: review }
+  - { from: review,  to: save, when: "review.choice == 'approve'" }
+  - { from: review,  to: end,  when: "review.choice == 'skip'" }
+  - { from: save,    to: end }
