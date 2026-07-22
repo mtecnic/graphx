@@ -221,6 +221,135 @@ def events(run_or_thread: Annotated[str, typer.Argument(help="run id or thread i
             _print_event(event, verbose=True)
 
 
+def _endpoints_quick() -> list:
+    """Cached endpoints, else a fast localhost-only probe (never LAN here)."""
+    from .llm.discovery import load_cache, scan
+    cached = load_cache()
+    if cached:
+        return cached
+    return asyncio.run(scan(lan=False, timeout=5))
+
+
+@app.command()
+def new(name: Annotated[str, typer.Argument(help="workflow name → NAME.yaml")],
+        template: Annotated[str, typer.Option("--template", "-t",
+                                              help="blank | agent | approval | pipeline")] = "blank",
+        tui_open: Annotated[bool, typer.Option("--tui", help="open the TUI on it")] = False,
+        force: Annotated[bool, typer.Option(help="overwrite an existing file")] = False,
+        ) -> None:
+    """Create a new workflow from a template (agent template auto-fills
+    a discovered local/LAN inference server)."""
+    from .templates import TEMPLATES, create_workflow
+
+    if template not in TEMPLATES:
+        console.print(f"[red]unknown template '{template}'[/red] — available:")
+        for t in TEMPLATES.values():
+            console.print(f"  [bold]{t.key:9}[/bold] {t.description}")
+        raise typer.Exit(code=1)
+
+    endpoints = _endpoints_quick() if TEMPLATES[template].needs_llm else []
+    try:
+        path = create_workflow(name, template, endpoints=endpoints, force=force)
+    except (ValueError, FileExistsError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]✔[/green] created [bold]{path}[/bold] "
+                  f"(template: {template})")
+    if TEMPLATES[template].needs_llm:
+        if endpoints:
+            from .llm.discovery import best_endpoint
+            chosen = best_endpoint(endpoints)
+            console.print(f"  model wired to discovered endpoint: "
+                          f"[bold]{chosen.label}[/bold]")
+        else:
+            console.print("  [yellow]no inference server found — edit the "
+                          "providers/model lines[/yellow]")
+    if tui_open:
+        tui(workflow=path, trace=None, db=None, attach=None, thread=None)
+    else:
+        console.print(f"  next: [bold]graphx tui {path}[/bold]")
+
+
+@app.command()
+def providers(scan_now: Annotated[bool, typer.Option("--scan", help="force a fresh scan")] = False,
+              lan: Annotated[bool, typer.Option(help="include the local /24 in the scan")] = True,
+              ) -> None:
+    """List discovered LLM inference endpoints (Ollama/vLLM/llama.cpp/LM Studio/...)."""
+    import time as _time
+
+    from .llm.discovery import discover, load_cache
+
+    if scan_now:
+        with console.status("scanning localhost + LAN…" if lan else "scanning localhost…"):
+            endpoints = asyncio.run(discover(refresh=True, lan=lan,
+                                             progress=lambda label: console.print(f"  • {label}")))
+    else:
+        endpoints = load_cache()
+        if not endpoints:
+            console.print("[yellow]no cached endpoints — scanning…[/yellow]")
+            endpoints = asyncio.run(discover(lan=lan))
+
+    if not endpoints:
+        console.print("[red]no inference endpoints found[/red] "
+                      "(ports probed: 11434, 1234, 5000, 8000, 8080)")
+        raise typer.Exit(code=1)
+    for endpoint in endpoints:
+        age = int(_time.time() - endpoint.checked_at)
+        console.print(f"[green]●[/green] [bold]{endpoint.alias}[/bold]  "
+                      f"{endpoint.base_url}  [dim]{endpoint.kind}, "
+                      f"{endpoint.response_ms}ms, checked {age}s ago[/dim]")
+        for model in endpoint.models:
+            console.print(f"    {endpoint.alias}/{model}")
+
+
+@app.command("scaffold-api")
+def scaffold_api(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+                 url: Annotated[str, typer.Argument(help="service base URL or spec URL")],
+                 op: Annotated[str | None, typer.Option(
+                     help='operation to add, e.g. "GET /runs/{thread_id}" or an '
+                          "operationId; omit to list operations")] = None,
+                 node_id: Annotated[str | None, typer.Option("--id")] = None,
+                 after: Annotated[str | None, typer.Option(
+                     help="insert after this node id")] = None,
+                 ) -> None:
+    """Add an api node scaffolded from a service's OpenAPI spec."""
+    from .model.openapi import fetch_spec, parse_operations, scaffold_api_node
+    from .model.yaml_writer import WorkflowFile
+
+    async def fetch():
+        return await fetch_spec(url if url.startswith(("http://", "https://"))
+                                else "http://" + url)
+
+    spec, base_url = asyncio.run(fetch())
+    operations = parse_operations(spec)
+    if op is None:
+        title = (spec.get("info") or {}).get("title", "spec")
+        console.print(f"[bold]{title}[/bold] — {len(operations)} operations:")
+        for operation in operations:
+            console.print(f"  {operation.label}")
+        console.print("\nre-run with --op \"METHOD /path\" to add one")
+        return
+
+    wanted = op.strip().lower()
+    match = next((o for o in operations
+                  if f"{o.method} {o.path}".lower() == wanted
+                  or o.operation_id.lower() == wanted), None)
+    if match is None:
+        console.print(f"[red]no operation matching {op!r}[/red]")
+        raise typer.Exit(code=1)
+
+    node = scaffold_api_node(match, base_url, spec, node_id)
+    wf = WorkflowFile(workflow)
+    wf.add_node(node, after=after)
+    wf.save()
+    console.print(f"[green]✔[/green] added api node "
+                  f"[bold]{node['id']}[/bold] to {workflow}:")
+    console.print_json(json.dumps(node, default=str))
+    console.print("[dim]review the <state.…> placeholders, then wire it with "
+                  "edges (or press c in the TUI)[/dim]")
+
+
 @app.command()
 def history(thread: Annotated[str, typer.Argument(help="thread id")],
             db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
@@ -251,8 +380,39 @@ def history(thread: Annotated[str, typer.Argument(help="thread id")],
         console.print_json(json.dumps(latest.state, default=str))
 
 
+def _default_workflow() -> Path:
+    """Bare `graphx tui`: prefer a workflow in cwd, else the bundled demo."""
+    candidates = sorted(Path(".").glob("*.yaml")) + sorted(Path(".").glob("*.yml"))
+    valid: list[Path] = []
+    for candidate in candidates:
+        try:
+            from .model.yaml_loader import load_raw
+            if load_raw(candidate).get("version") == 1:
+                valid.append(candidate)
+        except Exception:  # noqa: BLE001 — not a workflow file
+            continue
+    if len(valid) == 1:
+        return valid[0]
+    if valid:
+        console.print("[bold]workflows here:[/bold]")
+        for path in valid:
+            console.print(f"  graphx tui {path}")
+        raise typer.Exit(code=0)
+    from importlib.resources import as_file, files
+    bundled = files("graphx.examples") / "gpu_report.yaml"
+    with as_file(bundled) as path:
+        local = Path("gpu_report.yaml")
+        if not local.exists():
+            local.write_text(path.read_text())
+            console.print(f"[green]✔[/green] no workflow here — copied the bundled "
+                          f"[bold]gpu_report[/bold] demo to {local}")
+        return local
+
+
 @app.command()
-def tui(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+def tui(workflow: Annotated[Path | None, typer.Argument(dir_okay=False,
+                                                        help="workflow yaml; omit to "
+                                                        "auto-pick or scaffold a demo")] = None,
         trace: Annotated[Path | None, typer.Option(help="play a recorded event trace")] = None,
         db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
         attach: Annotated[str | None, typer.Option(help="graphx server URL to attach to, "
@@ -261,6 +421,10 @@ def tui(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
                                                    "(with --attach)")] = None,
         ) -> None:
     """Open the TUI: graph view + live runs (local or attached to a server)."""
+    if workflow is None:
+        workflow = _default_workflow()
+    elif not workflow.exists():
+        raise typer.BadParameter(f"no such file: {workflow}")
     graph = _load(workflow)
     from .tui.app import GraphxApp
     GraphxApp(graph, workflow_path=workflow, trace_path=trace,

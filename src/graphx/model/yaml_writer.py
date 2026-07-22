@@ -1,8 +1,10 @@
 """Structured mutations that write back to the workflow YAML.
 
-ruamel round-trip mode preserves comments, key order, and formatting,
-so palette edits produce clean, reviewable diffs — the file stays the
-source of truth.
+ruamel round-trip mode preserves comments, key order, and block
+formatting, so palette edits produce reviewable diffs — the file stays
+the source of truth. Known cosmetic caveat: spacing inside flow-style
+maps is normalized (`{ type: str }` → `{type: str}`) on first write;
+ruamel exposes no knob for it.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ class WorkflowFile:
         self.yaml = YAML()  # round-trip mode
         self.yaml.preserve_quotes = True
         self.yaml.width = 100
+        # match the prevailing hand-written style so diffs stay minimal
+        self.yaml.indent(mapping=2, sequence=4, offset=2)
         self.data = self.yaml.load(self.path.read_text())
         if not isinstance(self.data, CommentedMap):
             raise LoadError(f"{path}: top level must be a mapping")
@@ -63,6 +67,20 @@ class WorkflowFile:
                 node.pop(key, None)
             else:
                 node[key] = value
+
+    def set_provider(self, alias: str, config: dict[str, Any]) -> None:
+        """Create or update a providers: entry (idempotent)."""
+        providers = self.data.get("providers")
+        if providers is None:
+            providers = {}
+            # keep providers near the top, right after version/name/description
+            index = 0
+            for key in self.data:
+                if key not in ("version", "name", "description"):
+                    break
+                index += 1
+            self.data.insert(index, "providers", providers)
+        providers[alias] = config
 
     def add_edge(self, source: str, target: str, when: str | None = None) -> None:
         edges = self.data.setdefault("edges", [])

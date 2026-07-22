@@ -39,14 +39,37 @@ LLM providers are configured per workflow (`providers:`) — anything OpenAI-com
 
 ```bash
 python3 -m venv venv && ./venv/bin/pip install -e ".[tui,mcp,server]"
+./venv/bin/graphx tui                            # no args: opens the workflow here, or
+                                                 # scaffolds the bundled gpu_report demo
 ./venv/bin/graphx validate examples/hello.yaml
 ./venv/bin/graphx run examples/hello.yaml --input name=world
-./venv/bin/graphx tui examples/hello.yaml        # press r to run, e to edit, a to add a node
+./venv/bin/graphx tui examples/hello.yaml        # r run, e edit, a add node, o api-from-spec
 ./venv/bin/graphx serve examples --port 8420     # REST + SSE API
 ./venv/bin/graphx tui examples/hello.yaml --attach http://localhost:8420 --thread <id>
 ```
 
-CLI: `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `tui` · `serve`.
+The bundled **gpu_report** demo is a real workflow: it probes GPUs
+(nvidia-smi), disk, and your local inference server in parallel, has a
+local LLM write a markdown health report with a validated schema,
+branches on severity through a human acknowledgement gate, and saves
+the report — resilience (retries, LLM fallback, budgets) included.
+
+Create a new workflow from a template (the `agent` template auto-fills a
+discovered local/LAN inference server):
+
+```bash
+./venv/bin/graphx new my_flow --template agent --tui   # blank|agent|approval|pipeline
+./venv/bin/graphx providers --scan                     # list Ollama/vLLM/llama.cpp/LM Studio endpoints
+```
+
+The TUI scans localhost and the LAN for inference servers on startup
+(ports 11434/1234/5000/8000/8080). When you add an `agent` node (`a`), the
+discovered models are offered one-click, and the matching `providers:`
+block is written into the workflow so it stays self-contained. Press `n`
+for a new workflow from a template without leaving the TUI.
+`GRAPHX_NO_LAN_SCAN=1` restricts scanning to localhost.
+
+CLI: `new` · `providers` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
 
 ## HTTP API
 

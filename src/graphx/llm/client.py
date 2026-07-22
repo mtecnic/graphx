@@ -30,6 +30,8 @@ DEFAULT_PROVIDERS: dict[str, dict[str, Any]] = {
                   "protocol": "anthropic"},
     "ollama": {"base_url": "http://localhost:11434/v1", "protocol": "openai"},
     "vllm": {"base_url": "http://localhost:8000/v1", "protocol": "openai"},
+    "llamacpp": {"base_url": "http://localhost:8080/v1", "protocol": "openai"},
+    "lmstudio": {"base_url": "http://localhost:1234/v1", "protocol": "openai"},
 }
 
 ANTHROPIC_VERSION = "2023-06-01"

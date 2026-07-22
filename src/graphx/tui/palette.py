@@ -20,11 +20,21 @@ _MODAL_CSS = """
 
 
 class AddNodeScreen(ModalScreen[dict[str, Any] | None]):
-    """Collect id / type / config-YAML for a new node."""
+    """Collect id / type / config-YAML for a new node.
+
+    When inference endpoints have been discovered, they are offered as
+    one-click `model:` lines for agent/router nodes.
+    """
 
     DEFAULT_CSS = _MODAL_CSS + """
-    #config-area { height: 12; }
+    #config-area { height: 10; }
+    #model-list { max-height: 6; }
+    #model-hint { color: $text-muted; }
     """
+
+    def __init__(self, endpoints: list | None = None):
+        super().__init__()
+        self.endpoints = endpoints or []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-box"):
@@ -35,9 +45,26 @@ class AddNodeScreen(ModalScreen[dict[str, Any] | None]):
                         id="node-type")
             yield Label("config (YAML):")
             yield TextArea("", id="config-area", language="yaml")
+            model_options = [
+                Option(f"{ep.alias}/{model}  [{ep.host}:{ep.port}]".replace("[", "\\["),
+                       id=f"{ep.alias}/{model}")
+                for ep in self.endpoints for model in ep.models
+            ]
+            if model_options:
+                yield Label("discovered models (click to insert):", id="model-hint")
+                yield OptionList(*model_options, id="model-list")
             with Horizontal(id="modal-buttons"):
                 yield Button("cancel", id="cancel")
                 yield Button("add", id="ok", variant="primary")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        area = self.query_one("#config-area", TextArea)
+        text = area.text.rstrip()
+        text = (text + "\n" if text else "") + f"model: {event.option.id}\n"
+        area.text = text
+        type_input = self.query_one("#node-type", Input)
+        if not type_input.value.strip():
+            type_input.value = "agent"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -60,6 +87,77 @@ class AddNodeScreen(ModalScreen[dict[str, Any] | None]):
                 self.notify("config must be a YAML mapping", severity="error")
                 return
         self.dismiss({"id": node_id, "type": node_type, **config})
+
+
+class AddApiScreen(ModalScreen[dict[str, Any] | None]):
+    """Scaffold an api node from a live service's OpenAPI spec."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #op-list { height: 14; }
+    #spec-status { color: $text-muted; }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._ops: list = []
+        self._spec: dict = {}
+        self._base_url: str = ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label("[bold]add api node from OpenAPI[/bold]")
+            yield Input(placeholder="node id (blank = use operationId)", id="node-id")
+            yield Input(placeholder="service base URL or spec URL "
+                                    "(e.g. http://localhost:8420)", id="spec-url")
+            yield Label("", id="spec-status")
+            yield OptionList(id="op-list")
+            with Horizontal(id="modal-buttons"):
+                yield Button("cancel", id="cancel")
+                yield Button("fetch spec", id="fetch", variant="primary")
+
+    def _status(self, text: str) -> None:
+        self.query_one("#spec-status", Label).update(text)
+
+    async def _fetch(self) -> None:
+        from ..model.openapi import SpecError, fetch_spec, parse_operations
+
+        url = self.query_one("#spec-url", Input).value.strip()
+        if not url:
+            self._status("enter a URL first")
+            return
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        self._status(f"fetching {url} …")
+        try:
+            self._spec, self._base_url = await fetch_spec(url)
+        except SpecError as exc:
+            self._status(f"[red]{exc}[/red]")
+            return
+        self._ops = parse_operations(self._spec)
+        option_list = self.query_one("#op-list", OptionList)
+        option_list.clear_options()
+        option_list.add_options(
+            [Option(op.label, id=str(i)) for i, op in enumerate(self._ops)])
+        title = (self._spec.get("info") or {}).get("title", "spec")
+        self._status(f"{title}: {len(self._ops)} operations — pick one")
+        option_list.focus()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        elif event.button.id == "fetch":
+            await self._fetch()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "spec-url":
+            await self._fetch()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        from ..model.openapi import scaffold_api_node
+
+        op = self._ops[int(event.option.id)]
+        node_id = self.query_one("#node-id", Input).value.strip() or None
+        self.dismiss(scaffold_api_node(op, self._base_url, self._spec, node_id))
 
 
 class ConnectScreen(ModalScreen[tuple[str, str | None] | None]):
@@ -85,6 +183,38 @@ class ConnectScreen(ModalScreen[tuple[str, str | None] | None]):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         when = self.query_one("#when-clause", Input).value.strip() or None
         self.dismiss((event.option.id, when))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+
+class NewWorkflowScreen(ModalScreen[tuple[str, str] | None]):
+    """Name + template picker for a brand-new workflow file."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #template-list { height: 8; }
+    """
+
+    def compose(self) -> ComposeResult:
+        from ..templates import TEMPLATES
+        with Vertical(id="modal-box"):
+            yield Label("[bold]new workflow[/bold]")
+            yield Input(placeholder="workflow name (file will be <name>.yaml)",
+                        id="wf-name")
+            yield Label("template:")
+            yield OptionList(
+                *[Option(f"{t.key:9} — {t.description}", id=t.key)
+                  for t in TEMPLATES.values()],
+                id="template-list")
+            with Horizontal(id="modal-buttons"):
+                yield Button("cancel", id="cancel")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        name = self.query_one("#wf-name", Input).value.strip()
+        if not name:
+            self.notify("enter a name first", severity="error")
+            return
+        self.dismiss((name, event.option.id))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(None)
