@@ -101,6 +101,7 @@ class GraphxApp(App):
         Binding("a", "add_node", "add node"),
         Binding("o", "add_api", "api from spec"),
         Binding("c", "connect", "connect"),
+        Binding("i", "add_connector", "integration"),
         Binding("k", "secrets", "secrets"),
         Binding("d", "delete_node", "delete", show=False),
         Binding("p", "play_trace", "play trace", show=False),
@@ -335,6 +336,39 @@ class GraphxApp(App):
 
     def action_secrets(self) -> None:
         self._open_secrets()
+
+    @work(exclusive=False)
+    async def _palette_connector(self) -> None:
+        from ..secrets import SecretResolver
+        from .palette import ConnectorScreen, MissingSecretsScreen
+        spec = await self.push_screen_wait(ConnectorScreen())
+        if spec is None:
+            return
+        conn, node_id, values = spec["connector"], spec["node_id"], spec["values"]
+        result = conn.render(node_id, values)
+        selected = self.selected
+
+        def mutate(wf) -> None:
+            wf.add_node(result.node, after=selected)
+            if result.mcp_servers:
+                for name, cfg in result.mcp_servers.items():
+                    wf.set_mcp_server(name, cfg)
+
+        self._mutate(mutate)
+        if result.node["id"] in self.graph.nodes:
+            self.selected = result.node["id"]
+            self.redraw()
+            self.update_detail()
+        if result.note:
+            self.notify(result.note, timeout=8)
+        # prompt for any credential the connector needs but that isn't set
+        missing = SecretResolver(self.secret_store).missing(result.secret_names)
+        if missing:
+            await self.push_screen_wait(
+                MissingSecretsScreen(missing, self.secret_store))
+
+    def action_add_connector(self) -> None:
+        self._palette_connector()
 
     # ------------------------------------------------------------ palette
 

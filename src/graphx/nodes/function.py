@@ -39,8 +39,10 @@ def load_callable(spec: str):
 async def function_node(ctx: NodeContext) -> NodeResult:
     config: FunctionConfig = ctx.config  # type: ignore[assignment]
     fn = load_callable(config.handler)
+    # resolve secret:// refs in args only now, at the call boundary
+    args = ctx.services.secrets.resolve(dict(config.args))
     if asyncio.iscoroutinefunction(fn):
-        output = await fn(**config.args)
+        output = await fn(**args)
     else:
-        output = await asyncio.to_thread(fn, **config.args)
+        output = await asyncio.to_thread(fn, **args)
     return NodeResult(output=output)

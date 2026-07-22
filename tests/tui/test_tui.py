@@ -190,6 +190,31 @@ class TestApp:
             await pilot.pause()
             assert app.secret_store.get("tok") == "resolved-token"
 
+    async def test_connector_palette_inserts_node(self, tmp_path, monkeypatch):
+        import shutil
+        monkeypatch.setenv("GRAPHX_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr("graphx.secrets._keyring", lambda: None)
+        wf = tmp_path / "hello.yaml"
+        shutil.copy(HELLO, wf)
+        from graphx.connectors.registry import all_connectors
+        from graphx.tui.palette import ConnectorScreen
+        slack_index = [c.key for c in all_connectors()].index("slack")
+        app = GraphxApp(load_graph(wf), workflow_path=wf)
+        async with app.run_test(size=(120, 45)) as pilot:
+            app._palette_connector()
+            await pilot.pause()
+            assert isinstance(app.screen, ConnectorScreen)
+            option_list = app.screen.query_one("#connector-list")
+            option_list.highlighted = slack_index
+            await pilot.press("enter")          # selecting mounts the field inputs
+            await pilot.pause()
+            app.screen.query_one("#field-message").value = "ping"
+            app.screen.query_one("#conn-id").value = "notify"
+            await pilot.click("#add")
+            await pilot.pause()
+        graph = load_graph(wf)
+        assert graph.nodes["notify"].config["url"] == "secret://slack_webhook_url"
+
     async def test_full_run_inside_tui(self, hello_graph, tmp_path):
         app = GraphxApp(hello_graph, workflow_path=HELLO,
                         db_path=tmp_path / "test.db")

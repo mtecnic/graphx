@@ -356,6 +356,111 @@ def new(name: Annotated[str, typer.Argument(help="workflow name → NAME.yaml")]
 
 
 @app.command()
+def connectors(category: Annotated[str | None, typer.Option("--category", "-c",
+                                                            help="filter by category")] = None,
+               ) -> None:
+    """List available service connectors (credential-wired node presets)."""
+    from .connectors.registry import all_connectors, categories
+    items = [c for c in all_connectors() if category is None or c.category == category]
+    if not items:
+        console.print(f"[yellow]no connectors in category '{category}'[/yellow] "
+                      f"(have: {', '.join(categories())})")
+        raise typer.Exit(code=1)
+    current = None
+    for c in items:
+        if c.category != current:
+            current = c.category
+            console.print(f"\n[bold]{current}[/bold]")
+        extra = f" [dim](needs \\[{c.extra}] extra)[/dim]" if c.extra else ""
+        console.print(f"  [bold]{c.key:16}[/bold] {c.description}{extra}")
+        fields = ", ".join(f.name for f in c.fields if f.required and f.default is None)
+        if fields:
+            console.print(f"  {'':16} [dim]fields: {fields}[/dim]")
+        if c.secrets:
+            console.print(f"  {'':16} [dim]secrets: "
+                          f"{', '.join(s.name for s in c.secrets)}[/dim]")
+    console.print("\nadd one with: [bold]graphx add <connector> <workflow> "
+                  "field=value ...[/bold]")
+
+
+@app.command()
+def add(connector: Annotated[str, typer.Argument(help="connector key")],
+        workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+        fields: Annotated[list[str], typer.Argument(help="field=value pairs")] = [],
+        node_id: Annotated[str | None, typer.Option("--id", help="node id")] = None,
+        after: Annotated[str | None, typer.Option(help="insert after this node")] = None,
+        ) -> None:
+    """Add a service connector node to a workflow."""
+    from .connectors.registry import all_connectors, get
+    from .model.yaml_writer import WorkflowFile
+
+    try:
+        conn = get(connector)
+    except KeyError:
+        console.print(f"[red]unknown connector '{connector}'[/red] — available:")
+        for c in all_connectors():
+            console.print(f"  [bold]{c.key}[/bold] [dim]({c.category})[/dim] {c.description}")
+        raise typer.Exit(code=1) from None
+
+    values = _parse_kv(fields)
+    missing = conn.missing_fields(values)
+    if missing:
+        console.print(f"[red]missing required field(s):[/red] {', '.join(missing)}")
+        console.print(f"  fields: {', '.join(f.name + '=' for f in conn.fields)}")
+        raise typer.Exit(code=1)
+
+    result = conn.render(node_id or f"{conn.key}", values)
+    wf = WorkflowFile(workflow)
+    try:
+        wf.add_node(result.node, after=after)
+        if result.mcp_servers:
+            for name, cfg in result.mcp_servers.items():
+                wf.set_mcp_server(name, cfg)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    # validate the resulting file before saving over it
+    load_builtin_nodes()
+    graph = load_graph_from_text(wf.dumps(), workflow)
+    issues = validate_graph(graph, known_types=known_types())
+    if has_errors(issues):
+        console.print("[red]connector produced an invalid workflow:[/red]")
+        for issue in issues:
+            if issue.severity == "error":
+                console.print(f"  {issue}")
+        raise typer.Exit(code=1)
+    wf.save()
+
+    console.print(f"[green]✔[/green] added [bold]{result.node['id']}[/bold] "
+                  f"({conn.title}) to {workflow}")
+    if result.note:
+        console.print(f"  [yellow]{result.note}[/yellow]")
+    if conn.extra:
+        console.print(f"  [dim]run needs: pip install 'graphx\\[{conn.extra}]'[/dim]")
+    unset = _missing_secret_names(result.secret_names)
+    if unset:
+        console.print("  [yellow]set its credential(s):[/yellow]")
+        for name in unset:
+            hint = next((s.how for s in conn.secrets if s.name == name), "")
+            console.print(f"    graphx secret set {name}   [dim]# {hint}[/dim]")
+    console.print("  [dim]wire it with edges (or press c in the TUI)[/dim]")
+
+
+def _missing_secret_names(names: list[str]) -> list[str]:
+    from .secrets import SecretResolver
+    return SecretResolver().missing(names)
+
+
+def load_graph_from_text(text: str, path: Path):
+    from ruamel.yaml import YAML
+
+    from .model.yaml_loader import build_graph
+    data = YAML(typ="safe", pure=True).load(text)
+    return build_graph(data, source_path=str(path))
+
+
+@app.command()
 def providers(scan_now: Annotated[bool, typer.Option("--scan", help="force a fresh scan")] = False,
               lan: Annotated[bool, typer.Option(help="include the local /24 in the scan")] = True,
               ) -> None:
