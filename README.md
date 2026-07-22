@@ -98,7 +98,34 @@ any node:
 exact `graphx secret set` command to fix it); the TUI (`k` opens the
 manager) prompts for any missing secret before a run.
 
-CLI: `new` · `providers` · `secret set/list/rm` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
+## Connectors
+
+Drop-in, credential-wired nodes for popular services — no need to look
+up API shapes. Each declares the `secret://` it needs, so the missing-
+secret flow prompts for it.
+
+```bash
+graphx connectors                                    # list all (by category)
+graphx add slack notify.yaml message="deploy done"   # inserts a wired node
+graphx add github_issue bug.yaml owner=me repo=app title="broken"
+```
+
+In the TUI, `i` opens the connector palette: pick a service, fill the
+fields, and it inserts the node and prompts for the credential. First
+batch:
+
+| category | connectors |
+|---|---|
+| messaging | `slack` · `discord` · `telegram` · `webhook` |
+| email | `sendgrid` · `smtp` · `gmail` (via MCP) |
+| dev | `github_issue` · `github_comment` · `gitlab_issue` |
+| data | `postgres_query` (`[postgres]`) · `s3_put` (`[s3]`) |
+
+Most are plain HTTP `api` nodes with a `secret://` header (zero extra
+deps); SMTP is stdlib; Postgres/S3 need an extra; Gmail wires the
+GongRzhe MCP server (file-based OAuth, set up once).
+
+CLI: `new` · `connectors` · `add` · `providers` · `secret set/list/rm` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
 
 ## HTTP API
 

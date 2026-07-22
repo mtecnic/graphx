@@ -82,6 +82,19 @@ class WorkflowFile:
             self.data.insert(index, "providers", providers)
         providers[alias] = config
 
+    def set_mcp_server(self, name: str, config: dict[str, Any]) -> None:
+        """Create or update an mcp_servers: entry (idempotent)."""
+        servers = self.data.get("mcp_servers")
+        if servers is None:
+            servers = {}
+            index = 0
+            for key in self.data:
+                if key not in ("version", "name", "description", "providers"):
+                    break
+                index += 1
+            self.data.insert(index, "mcp_servers", servers)
+        servers[name] = config
+
     def add_edge(self, source: str, target: str, when: str | None = None) -> None:
         edges = self.data.setdefault("edges", [])
         for edge in edges:

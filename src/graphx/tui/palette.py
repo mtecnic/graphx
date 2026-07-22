@@ -220,6 +220,59 @@ class NewWorkflowScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+class ConnectorScreen(ModalScreen[dict | None]):
+    """Pick a service connector and fill its fields → returns a render spec."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #connector-list { height: 10; }
+    #field-rows Input { margin-bottom: 1; }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._connector = None
+
+    def compose(self) -> ComposeResult:
+        from ..connectors.registry import all_connectors
+        with Vertical(id="modal-box"):
+            yield Label("[bold]add a service connector[/bold]")
+            yield OptionList(
+                *[Option(f"{c.category:9} {c.key:16} {c.description}", id=c.key)
+                  for c in all_connectors()],
+                id="connector-list")
+            yield Input(placeholder="node id (blank = connector key)", id="conn-id")
+            yield Vertical(id="field-rows")
+            with Horizontal(id="modal-buttons"):
+                yield Button("cancel", id="cancel")
+                yield Button("add", id="add", variant="primary")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        from ..connectors.registry import get
+        self._connector = get(event.option.id)
+        rows = self.query_one("#field-rows", Vertical)
+        rows.remove_children()
+        for field in self._connector.fields:
+            required = "" if field.required and field.default is None else " (optional)"
+            rows.mount(Input(placeholder=f"{field.name}{required}: {field.placeholder}",
+                             id=f"field-{field.name}"))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel" or self._connector is None:
+            self.dismiss(None)
+            return
+        values: dict = {}
+        for field in self._connector.fields:
+            raw = self.query_one(f"#field-{field.name}", Input).value.strip()
+            if raw:
+                values[field.name] = raw
+        missing = self._connector.missing_fields(values)
+        if missing:
+            self.notify("missing: " + ", ".join(missing), severity="error")
+            return
+        node_id = self.query_one("#conn-id", Input).value.strip() or self._connector.key
+        self.dismiss({"connector": self._connector, "node_id": node_id, "values": values})
+
+
 class MissingSecretsScreen(ModalScreen[bool]):
     """Prompt for each secret a workflow needs but that isn't set yet.
     Saves entered values to the store; returns True if all were filled."""
