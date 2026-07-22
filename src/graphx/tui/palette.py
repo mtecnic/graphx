@@ -220,6 +220,106 @@ class NewWorkflowScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+class MissingSecretsScreen(ModalScreen[bool]):
+    """Prompt for each secret a workflow needs but that isn't set yet.
+    Saves entered values to the store; returns True if all were filled."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #secret-rows Input { margin-bottom: 1; }
+    """
+
+    def __init__(self, names: list[str], store: Any):
+        super().__init__()
+        self.names = names
+        self.store = store
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label("[bold]this workflow needs credentials[/bold]")
+            yield Label("[dim]stored 0600 in ~/.graphx/secrets.json; never written to "
+                        "the workflow file[/dim]")
+            with Vertical(id="secret-rows"):
+                for name in self.names:
+                    yield Input(placeholder=f"secret://{name}", password=True,
+                                id=f"secret-{name}")
+            with Horizontal(id="modal-buttons"):
+                yield Button("cancel", id="cancel")
+                yield Button("save", id="save", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(False)
+            return
+        for name in self.names:
+            value = self.query_one(f"#secret-{name}", Input).value
+            if value:
+                self.store.set(name, value)
+        still_missing = [n for n in self.names if self.store.get(n) is None]
+        if still_missing:
+            self.notify("still missing: " + ", ".join(still_missing), severity="error")
+            return
+        self.dismiss(True)
+
+
+class SecretsScreen(ModalScreen[None]):
+    """Manage stored secrets: list names (masked), add, delete."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #secret-list { height: 8; }
+    """
+
+    def __init__(self, store: Any):
+        super().__init__()
+        self.store = store
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label(f"[bold]secrets[/bold] [dim]({self.store.backend()} backend)[/dim]")
+            yield OptionList(*self._options(), id="secret-list")
+            yield Input(placeholder="new secret name", id="new-name")
+            yield Input(placeholder="value", password=True, id="new-value")
+            with Horizontal(id="modal-buttons"):
+                yield Button("close", id="close")
+                yield Button("add", id="add", variant="primary")
+            yield Label("[dim]select a row to delete it[/dim]")
+
+    def _options(self) -> list[Option]:
+        names = self.store.names()
+        if not names:
+            return [Option("(none stored)", id="__none__")]
+        return [Option(f"{n}   secret://{n}", id=n) for n in names]
+
+    def _refresh(self) -> None:
+        option_list = self.query_one("#secret-list", OptionList)
+        option_list.clear_options()
+        option_list.add_options(self._options())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close":
+            self.dismiss(None)
+            return
+        name = self.query_one("#new-name", Input).value.strip()
+        value = self.query_one("#new-value", Input).value
+        if not name or not value:
+            self.notify("name and value required", severity="error")
+            return
+        try:
+            self.store.set(name, value)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.query_one("#new-name", Input).value = ""
+        self.query_one("#new-value", Input).value = ""
+        self._refresh()
+        self.notify(f"stored {name}")
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id and event.option.id != "__none__":
+            self.store.delete(event.option.id)
+            self._refresh()
+            self.notify(f"removed {event.option.id}")
+
+
 class ConfirmScreen(ModalScreen[bool]):
     DEFAULT_CSS = _MODAL_CSS
 

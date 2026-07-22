@@ -153,6 +153,43 @@ class TestApp:
         assert graph.providers["openai_local_8000"]["base_url"] == \
             "http://127.0.0.1:8000/v1"
 
+    async def test_secrets_screen_opens_and_stores(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GRAPHX_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr("graphx.secrets._keyring", lambda: None)
+        from graphx.tui.palette import SecretsScreen
+        app = GraphxApp(load_graph(HELLO), workflow_path=HELLO)
+        async with app.run_test(size=(120, 45)) as pilot:
+            app._open_secrets()
+            await pilot.pause()
+            assert isinstance(app.screen, SecretsScreen)
+            app.screen.query_one("#new-name").value = "apikey"
+            app.screen.query_one("#new-value").value = "sk-secret"
+            await pilot.click("#add")
+            await pilot.pause()
+            assert app.secret_store.get("apikey") == "sk-secret"
+            await pilot.press("escape")
+
+    async def test_missing_secret_prompt_before_run(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GRAPHX_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr("graphx.secrets._keyring", lambda: None)
+        wf = tmp_path / "needs.yaml"
+        wf.write_text(
+            "version: 1\nname: needs\nentry: [c]\n"
+            "nodes:\n  - id: c\n    type: api\n    method: GET\n"
+            '    url: "https://api.test/x"\n'
+            '    headers: { Authorization: "Bearer secret://tok" }\n'
+            "edges:\n  - { from: c, to: end }\n")
+        from graphx.tui.palette import MissingSecretsScreen
+        app = GraphxApp(load_graph(wf), workflow_path=wf)
+        async with app.run_test(size=(120, 45)) as pilot:
+            app._run_with_secrets()
+            await pilot.pause()
+            assert isinstance(app.screen, MissingSecretsScreen)
+            app.screen.query_one("#secret-tok").value = "resolved-token"
+            await pilot.click("#save")
+            await pilot.pause()
+            assert app.secret_store.get("tok") == "resolved-token"
+
     async def test_full_run_inside_tui(self, hello_graph, tmp_path):
         app = GraphxApp(hello_graph, workflow_path=HELLO,
                         db_path=tmp_path / "test.db")

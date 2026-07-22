@@ -76,6 +76,10 @@ class Executor:
         self.services = services or Services()
         self.scheduler = Scheduler(graph)
 
+    def _show(self, obj: Any) -> Any:
+        """Summarize for an event payload AND redact any secret value."""
+        return self.services.redact(_summarize(obj))
+
     # ------------------------------------------------------------------ setup
 
     async def run(self, thread_id: str,
@@ -104,7 +108,7 @@ class Executor:
             if input.goto:
                 frontier = [TaskSpec(node_id=input.goto)]
             await self.bus.emit(EventType.RUN_RESUMED, step=step,
-                                resume=_summarize(input.resume), goto=input.goto)
+                                resume=self._show(input.resume), goto=input.goto)
         else:
             state = State.initial(self.graph.channels, input)
             visits = {}
@@ -119,7 +123,7 @@ class Executor:
             dead_letters = []
             step = 0
             await self.bus.emit(EventType.RUN_STARTED, step=0, graph=self.graph.name,
-                                inputs=_summarize(dict(input)))
+                                inputs=self._show(dict(input)))
 
         guards = Guards(self.graph.config, self.services.clock,
                         already_elapsed_s=metrics.elapsed_s)
@@ -137,7 +141,7 @@ class Executor:
                     await self.bus.emit(EventType.GUARD_TRIPPED, step=step,
                                         guard=trip.guard, detail=trip.detail)
                     await self.bus.emit(EventType.RUN_FAILED, step=step, error=str(trip))
-                    return RunOutcome("guard_tripped", state.to_json(), step, metrics,
+                    return RunOutcome("guard_tripped", self.services.redact(state.to_json()), step, metrics,
                                       error=str(trip), dead_letters=tuple(dead_letters))
 
                 await self.bus.emit(EventType.SUPERSTEP_STARTED, step=step,
@@ -177,7 +181,7 @@ class Executor:
                         updates.update(resolve(dict(node.updates), ref_ctx))
                     if updates:
                         state = state.apply(updates)
-                        changed.update({k: _summarize(state.get(k)) for k in updates})
+                        changed.update({k: self._show(state.get(k)) for k in updates})
                     metrics.tokens += result.metrics.tokens
                     metrics.cost_usd += result.metrics.cost_usd
                     metrics.nodes_run += 1
@@ -220,10 +224,10 @@ class Executor:
                     await self.bus.emit(EventType.INTERRUPT_RAISED, step=step,
                                         node_id=interrupt.node_id,
                                         interrupt_id=interrupt.interrupt_id,
-                                        payload=_summarize(interrupt.payload))
+                                        payload=self._show(interrupt.payload))
                     await self.bus.emit(EventType.RUN_INTERRUPTED, step=step,
                                         node_id=interrupt.node_id)
-                    return RunOutcome("interrupted", state.to_json(), step, metrics,
+                    return RunOutcome("interrupted", self.services.redact(state.to_json()), step, metrics,
                                       interrupt=interrupt, dead_letters=tuple(dead_letters))
 
                 if outcome.fatal_failures:
@@ -232,7 +236,7 @@ class Executor:
                     error = f"node(s) failed with no error route: {', '.join(outcome.fatal_failures)}"
                     await self.bus.emit(EventType.RUN_FAILED, step=step, error=error,
                                         dead_letters=len(dead_letters))
-                    return RunOutcome("failed", state.to_json(), step, metrics, error=error,
+                    return RunOutcome("failed", self.services.redact(state.to_json()), step, metrics, error=error,
                                       dead_letters=tuple(dead_letters))
 
                 for warn in guards.warnings(step + 1, metrics):
@@ -253,9 +257,9 @@ class Executor:
             raise
 
         await self.bus.emit(EventType.RUN_FINISHED, step=step,
-                            state=_summarize(state.to_json()),
+                            state=self._show(state.to_json()),
                             dead_letters=len(dead_letters))
-        return RunOutcome("finished", state.to_json(), step, metrics,
+        return RunOutcome("finished", self.services.redact(state.to_json()), step, metrics,
                           dead_letters=tuple(dead_letters))
 
     # ------------------------------------------------------------- one task
@@ -296,12 +300,13 @@ class Executor:
                     await self.bus.emit(EventType.NODE_CACHED, step=step, node_id=node.id,
                                         input_hash=digest[:16])
                     await self.bus.emit(EventType.NODE_FINISHED, step=step, node_id=node.id,
-                                        output=_summarize(result.output), cached=True)
+                                        output=self._show(result.output), cached=True)
                     return
 
             async def emit_chunk(chunk: str) -> None:
                 await self.bus.emit(EventType.NODE_OUTPUT_CHUNK, step=step,
-                                    node_id=node.id, chunk=chunk)
+                                    node_id=node.id,
+                                    chunk=self.services.redact(chunk))
 
             source_dir = Path(self.graph.source_path).parent \
                 if self.graph.source_path else None
@@ -323,12 +328,12 @@ class Executor:
             if settled.ok and settled.result is not None:
                 if policy.cache:
                     await self.checkpointer.cache_put(node.id, digest, {
-                        "output": settled.result.output,
-                        "updates": dict(settled.result.updates),
+                        "output": self.services.redact(settled.result.output),
+                        "updates": self.services.redact(dict(settled.result.updates)),
                     })
                 await self.bus.emit(
                     EventType.NODE_FINISHED, step=step, node_id=node.id,
-                    output=_summarize(settled.result.output),
+                    output=self._show(settled.result.output),
                     duration_s=round(settled.duration_s, 3),
                     attempts=settled.attempts,
                     degraded=settled.result.metrics.degraded or None)
@@ -346,10 +351,15 @@ class Executor:
                     visits: dict[str, int], join_arrivals: dict[str, dict[str, bool]],
                     interrupt: Interrupt | None, metrics: RunMetrics,
                     dead_letters: list[DeadLetter]) -> None:
+        # redact any leaked secret VALUE before it reaches disk; with late
+        # resolution these normally hold only secret:// placeholders, and with
+        # no secrets in play redact() is a no-op (empty value set).
         await self.checkpointer.save(Checkpoint(
             thread_id=thread_id, run_id=run_id, step=step,
-            graph_name=self.graph.name, state=state.to_json(),
-            frontier=tuple(frontier), node_outputs=dict(node_outputs),
+            graph_name=self.graph.name,
+            state=self.services.redact(state.to_json()),
+            frontier=tuple(frontier),
+            node_outputs=self.services.redact(dict(node_outputs)),
             visits=dict(visits), join_arrivals={k: dict(v) for k, v in join_arrivals.items()},
             pending_interrupt=interrupt, metrics=metrics,
             dead_letters=tuple(dead_letters),

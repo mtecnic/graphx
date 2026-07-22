@@ -16,8 +16,9 @@ from ..llm.client import ToolDef
 
 
 class McpManager:
-    def __init__(self, servers: Mapping[str, Any]):
+    def __init__(self, servers: Mapping[str, Any], resolver: Any = None):
         self.configs = dict(servers)
+        self._resolver = resolver          # SecretResolver, or None (no resolution)
         self._stack = AsyncExitStack()
         self._sessions: dict[str, Any] = {}
         self._tool_cache: dict[str, dict[str, ToolDef]] = {}
@@ -42,9 +43,12 @@ class McpManager:
         if not command:
             raise ConfigError(f"MCP server '{name}': missing 'command'")
 
+        env = config.get("env") or None
+        if env and self._resolver is not None:
+            env = self._resolver.resolve(env)   # resolve secret:// at spawn
         params = StdioServerParameters(
             command=command[0], args=list(command[1:]),
-            env=config.get("env") or None, cwd=config.get("cwd"))
+            env=env, cwd=config.get("cwd"))
         try:
             read, write = await self._stack.enter_async_context(stdio_client(params))
             session = await self._stack.enter_async_context(ClientSession(read, write))

@@ -50,7 +50,9 @@ async def _read_stream(stream: asyncio.StreamReader, chunks: list[str],
 @node_type("shell", config_model=ShellConfig)
 async def shell_node(ctx: NodeContext) -> NodeResult:
     config: ShellConfig = ctx.config  # type: ignore[assignment]
-    env = {**os.environ, **config.env} if config.env else None
+    # resolve secret:// refs in env only now, at the subprocess boundary
+    resolved_env = ctx.services.secrets.resolve(config.env) if config.env else {}
+    env = {**os.environ, **resolved_env} if resolved_env else None
 
     if isinstance(config.command, str):
         create = asyncio.create_subprocess_shell(

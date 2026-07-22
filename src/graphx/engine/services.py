@@ -38,6 +38,16 @@ class FakeClock:
         await asyncio.sleep(0)  # yield to the loop
 
 
+def _default_resolver() -> Any:
+    from ..secrets import null_resolver
+    return null_resolver()
+
+
+def _default_redactor() -> Any:
+    from ..secrets import Redactor
+    return Redactor(set())
+
+
 @dataclass
 class Services:
     clock: Clock = field(default_factory=RealClock)
@@ -45,3 +55,8 @@ class Services:
     llm: Any = None       # LLMClient (v0.2)
     http: Any = None      # httpx.AsyncClient (v0.2)
     mcp: Any = None       # McpManager (v0.2)
+    secrets: Any = field(default_factory=_default_resolver)   # SecretResolver
+    redactor: Any = field(default_factory=_default_redactor)  # Redactor
+
+    def redact(self, obj: Any) -> Any:
+        return self.redactor.redact(obj)

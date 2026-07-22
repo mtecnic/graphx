@@ -57,11 +57,15 @@ async def api_node(ctx: NodeContext) -> NodeResult:
     if own_client:
         client = httpx.AsyncClient(timeout=30.0)
     try:
+        # resolve secret:// refs only now, at the request boundary
+        resolve = ctx.services.secrets.resolve
         try:
             response = await client.request(
-                config.method.upper(), config.url, headers=config.headers or None,
-                params=config.params or None, json=config.json_body,
-                content=config.body)
+                config.method.upper(), resolve(config.url),
+                headers=resolve(config.headers) or None,
+                params=resolve(config.params) or None,
+                json=resolve(config.json_body),
+                content=resolve(config.body))
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise TransientError(f"HTTP request failed: {exc}") from exc
 
