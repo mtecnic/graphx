@@ -111,10 +111,20 @@ class TestResolver:
 
 class TestRedactor:
     def test_masks_known_values_nested(self):
-        r = Redactor({"topsecret", "key2"})
-        obj = {"a": "prefix-topsecret-suffix", "b": ["has key2 inside"], "c": 5}
+        r = Redactor({"topsecret", "secondsecret"})
+        obj = {"a": "prefix-topsecret-suffix", "b": ["has secondsecret inside"], "c": 5}
         out = r.redact(obj)
         assert out == {"a": "prefix-***-suffix", "b": ["has *** inside"], "c": 5}
+
+    def test_skips_short_values(self):
+        # values below MIN_LEN are too collision-prone to mask safely
+        r = Redactor({"1234"})
+        assert r.redact("order 1234 shipped") == "order 1234 shipped"
+
+    def test_longest_first_no_partial_leak(self):
+        # both >= MIN_LEN; "secret" is a substring of "secretlong"
+        r = Redactor({"secretlong", "secret"})
+        assert r.redact("x=secretlong") == "x=***"   # longest-first → not "***long"
 
     def test_no_false_positives(self):
         r = Redactor({"topsecret"})

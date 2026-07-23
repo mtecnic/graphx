@@ -27,7 +27,7 @@ class TestLinearAndParallel:
         assert outcome.status == "finished"
         merge_event = h.events_of("node_finished")[2]
         assert merge_event.node_id == "m"
-        assert merge_event.data["output"]["arrivals"] == {"a": True, "b": True}
+        assert merge_event.data["output"]["arrivals"] == {"a": "ok", "b": "ok"}
 
     async def test_merge_threshold_tolerates_failure(self):
         h = Harness(graph(

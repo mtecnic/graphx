@@ -33,6 +33,10 @@ _tools_mod = types.ModuleType("tests_tools")
 _tools_mod.word_count = lambda text: {"count": len(str(text).split())}
 sys.modules["tests_tools"] = _tools_mod
 
+_none_mod = types.ModuleType("tests_none")
+_none_mod.noop = lambda **kw: None      # a valid successful item with None output
+sys.modules["tests_none"] = _none_mod
+
 # -------------------------------------------------------------- fake LLM
 
 

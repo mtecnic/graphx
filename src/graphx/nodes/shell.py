@@ -8,6 +8,7 @@ streamed line-by-line as node_output_chunk events.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 
@@ -91,10 +92,15 @@ async def shell_node(ctx: NodeContext) -> NodeResult:
 async def _feed_stdin(proc: asyncio.subprocess.Process, data: str | None) -> None:
     if proc.stdin is None:
         return
-    if data:
-        proc.stdin.write(data.encode())
-        await proc.stdin.drain()
-    proc.stdin.close()
+    # a command that exits without reading stdin closes the pipe — writing then
+    # raises BrokenPipe/ConnectionReset, which must not fail an otherwise-fine node.
+    try:
+        if data:
+            proc.stdin.write(data.encode())
+            await proc.stdin.drain()
+        proc.stdin.close()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 async def _kill_group(proc: asyncio.subprocess.Process) -> None:
@@ -107,10 +113,16 @@ async def _kill_group(proc: asyncio.subprocess.Process) -> None:
     try:
         os.killpg(pgid, signal.SIGTERM)
         try:
-            async with asyncio.timeout(_KILL_GRACE_S):
-                await proc.wait()
+            await asyncio.wait_for(proc.wait(), _KILL_GRACE_S)
         except TimeoutError:
-            os.killpg(pgid, signal.SIGKILL)
-            await proc.wait()
+            # ignored SIGTERM within the grace window → force-kill
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pgid, signal.SIGKILL)
+        except asyncio.CancelledError:
+            # a node-timeout cancel interrupted the grace wait — still force-kill
+            # the tree before propagating, so nothing is orphaned.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pgid, signal.SIGKILL)
+            raise
     except ProcessLookupError:
         pass

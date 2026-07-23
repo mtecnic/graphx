@@ -196,13 +196,21 @@ class Redactor:
         self._values = values
         self.placeholder = placeholder
 
+    # Only mask values long enough to be real credentials. Short values
+    # (a PIN, a port, "true") are near-certain to collide with legitimate
+    # data, where masking would corrupt it — a worse outcome than not masking
+    # a value too short to be a meaningful secret.
+    MIN_LEN = 6
+
     def redact(self, obj: Any) -> Any:
         if not self._values:
             return obj
         if isinstance(obj, str):
             out = obj
-            for value in self._values:
-                if value and value in out:
+            # longest-first so a secret that is a substring of another
+            # secret can't leave the tail of the longer one exposed.
+            for value in sorted(self._values, key=len, reverse=True):
+                if value and len(value) >= self.MIN_LEN and value in out:
                     out = out.replace(value, self.placeholder)
             return out
         if isinstance(obj, dict):

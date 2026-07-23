@@ -7,6 +7,7 @@ Last-Event-ID replay from SQLite.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,15 @@ def create_app(workflow_dir: Path | str = ".", db_path: Path | str | None = None
             yield
         finally:
             await scheduler.stop()
+            # drain in-flight fired runs so nothing is abruptly orphaned at
+            # loop close (each run is resume-safe from its last checkpoint).
+            inflight = [h.task for h in runs.values()
+                        if h.task is not None and not h.task.done()]
+            for task in inflight:
+                task.cancel()
+            for task in inflight:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
     app = FastAPI(title="graphx", version="0.6", lifespan=lifespan)
     app.state.runs = runs

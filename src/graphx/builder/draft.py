@@ -108,7 +108,11 @@ class WorkflowDraft:
             return
         for node in self._nodes:
             if node.get("id") == node_id:
-                node.update(changes)
+                for key, value in changes.items():
+                    if value is None:          # match WorkflowFile: None deletes the key
+                        node.pop(key, None)
+                    else:
+                        node[key] = value
                 return
         raise LoadError(f"no node '{node_id}'")
 

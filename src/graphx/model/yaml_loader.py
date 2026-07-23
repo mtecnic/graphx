@@ -47,12 +47,14 @@ def parse_duration(value: Any, where: str) -> float:
 
 
 def _interpolate_env(value: Any, where: str) -> Any:
+    # An unset ${VAR} is left in place (not a load error), so a well-formed
+    # workflow still validates / opens / can be edited without every env var
+    # exported — mirroring secret:// laziness. A set var interpolates as before;
+    # an unresolved placeholder simply surfaces when the node runs.
     if isinstance(value, str):
         def sub(m: re.Match[str]) -> str:
             var = m.group(1)
-            if var not in os.environ:
-                raise LoadError(f"{where}: environment variable ${{{var}}} is not set")
-            return os.environ[var]
+            return os.environ.get(var, m.group(0))
         return _ENV_RE.sub(sub, value)
     if isinstance(value, dict):
         return {k: _interpolate_env(v, where) for k, v in value.items()}

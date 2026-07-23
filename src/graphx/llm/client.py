@@ -255,9 +255,17 @@ class LLMClient:
             if role == "system":
                 continue
             if role == "tool":
-                converted.append({"role": "user", "content": [{
-                    "type": "tool_result", "tool_use_id": message.get("tool_call_id", ""),
-                    "content": str(message.get("content", ""))}]})
+                # Anthropic requires ALL tool_results for one assistant turn in a
+                # single user turn — coalesce consecutive tool messages.
+                block = {"type": "tool_result",
+                         "tool_use_id": message.get("tool_call_id", ""),
+                         "content": str(message.get("content", ""))}
+                if converted and converted[-1]["role"] == "user" \
+                        and isinstance(converted[-1]["content"], list) \
+                        and converted[-1]["content"][0].get("type") == "tool_result":
+                    converted[-1]["content"].append(block)
+                else:
+                    converted.append({"role": "user", "content": [block]})
             elif role == "assistant" and message.get("tool_calls"):
                 blocks: list[dict[str, Any]] = []
                 if message.get("content"):
