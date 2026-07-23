@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphx"
-version = "0.4.0"
+version = "0.5.0"
 description = "TUI-native designer and runner for agentic workflows: graph pipelines with loops, LLM agents, APIs, MCP tools, Python and shell nodes."
 readme = "README.md"
 license = { text = "MIT" }
