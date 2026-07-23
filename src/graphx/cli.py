@@ -452,6 +452,105 @@ def _missing_secret_names(names: list[str]) -> list[str]:
     return SecretResolver().missing(names)
 
 
+def _print_build_result(result) -> None:
+    console.print(f"[dim]engine: {result.engine}  model: {result.model}  "
+                  f"~{result.tokens} tokens[/dim]")
+    if result.ok:
+        console.print("[green]✔ valid workflow generated[/green]")
+    else:
+        console.print("[yellow]⚠ could not produce a fully valid workflow "
+                      "(saving as a draft to fix by hand)[/yellow]")
+        for issue in result.errors:
+            console.print(f"  [red]{issue}[/red]")
+
+
+@app.command()
+def generate(description: Annotated[str, typer.Argument(help="what the workflow should do")],
+             name: Annotated[str | None, typer.Option(help="workflow name")] = None,
+             out: Annotated[Path | None, typer.Option("--out", help="output .yaml path")] = None,
+             engine: Annotated[str, typer.Option(help="oneshot | agentic | auto")] = "oneshot",
+             agentic: Annotated[bool, typer.Option("--agentic", help="use the agentic engine")] = False,
+             model: Annotated[str | None, typer.Option(help="provider/model override")] = None,
+             yes: Annotated[bool, typer.Option("--yes", "-y", help="write without confirming")] = False,
+             ) -> None:
+    """Generate a new workflow from a natural-language description (uses your local model)."""
+    from .builder import build_workflow
+
+    load_builtin_nodes()
+    wf_name = name or _slugify(description)
+    endpoints = _endpoints_quick()
+    with console.status("thinking…"):
+        result = asyncio.run(build_workflow(
+            description=description, name=wf_name, endpoints=endpoints, model=model,
+            engine="agentic" if agentic else engine))
+    console.print(result.yaml)
+    _print_build_result(result)
+
+    target = out or Path(f"{wf_name}.yaml")
+    if not result.ok:
+        target = target.with_suffix(".draft.yaml")
+    if not yes and sys.stdin.isatty():
+        if not typer.confirm(f"write to {target}?", default=result.ok):
+            raise typer.Exit(code=0)
+    target.write_text(result.yaml)
+    console.print(f"[green]✔[/green] wrote {target}")
+    if result.ok:
+        _report_missing_secrets(result)
+        console.print(f"  run it: [bold]graphx run {target}[/bold]  "
+                      f"or edit: [bold]graphx tui {target}[/bold]")
+
+
+@app.command()
+def edit(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+         instruction: Annotated[str, typer.Argument(help="the change to make, in plain English")],
+         agentic: Annotated[bool, typer.Option("--agentic", help="surgical tool-driven edit")] = False,
+         model: Annotated[str | None, typer.Option(help="provider/model override")] = None,
+         yes: Annotated[bool, typer.Option("--yes", "-y", help="apply without confirming")] = False,
+         ) -> None:
+    """Apply a natural-language edit to an existing workflow."""
+    import difflib
+
+    from .builder import build_workflow
+
+    load_builtin_nodes()
+    before = workflow.read_text()
+    endpoints = _endpoints_quick()
+    with console.status("thinking…"):
+        result = asyncio.run(build_workflow(
+            instruction=instruction, current_path=workflow, endpoints=endpoints,
+            model=model, engine="agentic" if agentic else "oneshot"))
+
+    diff = list(difflib.unified_diff(before.splitlines(), result.yaml.splitlines(),
+                                     fromfile=str(workflow), tofile="proposed", lineterm=""))
+    for line in diff:
+        style = "green" if line.startswith("+") else "red" if line.startswith("-") else "dim"
+        console.print(f"[{style}]{line}[/{style}]", highlight=False)
+    _print_build_result(result)
+    if not result.ok:
+        console.print("[yellow]not applied — the edit didn't validate[/yellow]")
+        raise typer.Exit(code=1)
+    if not yes and sys.stdin.isatty():
+        if not typer.confirm("apply this change?", default=True):
+            raise typer.Exit(code=0)
+    workflow.write_text(result.yaml)
+    console.print(f"[green]✔[/green] updated {workflow}")
+    _report_missing_secrets(result)
+
+
+def _report_missing_secrets(result) -> None:
+    if result.draft is None:
+        return
+    unset = _missing_secret_names(sorted(result.draft.secret_refs()))
+    for name in unset:
+        console.print(f"  [yellow]set its credential:[/yellow] graphx secret set {name}")
+
+
+def _slugify(text: str) -> str:
+    import re
+    words = re.findall(r"[a-z0-9]+", text.lower())[:4]
+    return "_".join(words) or "workflow"
+
+
 def load_graph_from_text(text: str, path: Path):
     from ruamel.yaml import YAML
 
@@ -463,11 +562,27 @@ def load_graph_from_text(text: str, path: Path):
 @app.command()
 def providers(scan_now: Annotated[bool, typer.Option("--scan", help="force a fresh scan")] = False,
               lan: Annotated[bool, typer.Option(help="include the local /24 in the scan")] = True,
+              add: Annotated[str | None, typer.Option("--add", help="probe & add an endpoint "
+                                                      "by URL (e.g. http://host:8000/v1)")] = None,
               ) -> None:
     """List discovered LLM inference endpoints (Ollama/vLLM/llama.cpp/LM Studio/...)."""
     import time as _time
 
-    from .llm.discovery import discover, load_cache
+    from .llm.discovery import add_endpoint, discover, load_cache
+
+    if add:
+        with console.status(f"probing {add}…"):
+            endpoint = asyncio.run(add_endpoint(add))
+        if endpoint is None:
+            console.print(f"[red]no LLM server at {add}[/red] "
+                          "(expected an OpenAI-compatible /v1/models or Ollama /api/tags)")
+            raise typer.Exit(code=1)
+        console.print(f"[green]✔[/green] added [bold]{endpoint.alias}[/bold]  "
+                      f"{endpoint.base_url}  [dim]{endpoint.kind}, "
+                      f"{endpoint.response_ms}ms[/dim]")
+        for model in endpoint.models:
+            console.print(f"    {endpoint.alias}/{model}")
+        return
 
     if scan_now:
         with console.status("scanning localhost + LAN…" if lan else "scanning localhost…"):

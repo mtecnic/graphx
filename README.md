@@ -35,6 +35,28 @@ graphx lets you define flow-chart-like agent pipelines — with loops, branches,
 
 LLM providers are configured per workflow (`providers:`) — anything OpenAI-compatible (vLLM, Ollama, LM Studio, gateways) plus native Anthropic. No SDK dependencies.
 
+## Build from natural language
+
+Point graphx at any OpenAI-compatible server (vLLM / llama.cpp / Ollama /
+LM Studio / a gateway) and describe what you want — it builds a valid,
+runnable workflow using the full node + connector set, self-correcting
+against the validator.
+
+```bash
+graphx providers --add http://192.168.1.50:8000    # probe a URL, auto-discover its model
+graphx generate "fetch a URL, summarize it with the local model, save to a file"
+graphx edit myflow.yaml "add a Slack alert when the agent fails"
+```
+
+`generate` writes a workflow file you can `run`, `tui`, or hand-edit; it
+prompts for any credential the result needs. Two engines: `--engine
+oneshot` (default, reliable on small local models — emits the whole
+workflow and repairs it against the validator) and `--agentic` (drives
+builder tools step by step; best on capable models). In the TUI, `g`
+opens a prompt and renders the generated graph. It's an editable first
+draft, not an oracle — quality scales with your model, and the result is
+always either valid or clearly flagged for a quick fix.
+
 ## Quickstart
 
 ```bash
@@ -125,7 +147,7 @@ Most are plain HTTP `api` nodes with a `secret://` header (zero extra
 deps); SMTP is stdlib; Postgres/S3 need an extra; Gmail wires the
 GongRzhe MCP server (file-based OAuth, set up once).
 
-CLI: `new` · `connectors` · `add` · `providers` · `secret set/list/rm` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
+CLI: `generate` · `edit` · `new` · `connectors` · `add` · `providers [--add <url>]` · `secret set/list/rm` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
 
 ## HTTP API
 
