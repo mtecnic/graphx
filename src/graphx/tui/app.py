@@ -98,6 +98,7 @@ class GraphxApp(App):
         Binding("e", "edit", "edit yaml"),
         Binding("l", "reload", "reload"),
         Binding("n", "new_workflow", "new"),
+        Binding("g", "generate", "generate"),
         Binding("a", "add_node", "add node"),
         Binding("o", "add_api", "api from spec"),
         Binding("c", "connect", "connect"),
@@ -369,6 +370,57 @@ class GraphxApp(App):
 
     def action_add_connector(self) -> None:
         self._palette_connector()
+
+    @work(exclusive=False)
+    async def _endpoint_screen(self) -> None:
+        from .palette import AddEndpointScreen
+        endpoint = await self.push_screen_wait(AddEndpointScreen())
+        if endpoint is not None:
+            if not any(e.alias == endpoint.alias for e in self.endpoints):
+                self.endpoints.append(endpoint)
+            self.notify(f"added {endpoint.alias}: {len(endpoint.models)} model(s)")
+
+    @work(exclusive=False)
+    async def _palette_generate(self) -> None:
+        from ..builder import build_workflow
+        from ..templates import _NAME_RE
+        from .palette import PromptScreen
+
+        if not self.endpoints:
+            self.notify("no inference endpoint — add one first (see status bar)",
+                        severity="warning")
+            self._endpoint_screen()
+            return
+        # generate a NEW workflow, or edit the current one, from one prompt
+        prompt = await self.push_screen_wait(PromptScreen(
+            "describe a workflow to build (or a change to make)",
+            "e.g. 'fetch a URL, summarize with the local model, save to a file'"))
+        if not prompt:
+            return
+        self.notify("generating…", timeout=3)
+        try:
+            result = await build_workflow(description=prompt, endpoints=self.endpoints,
+                                          name="generated")
+        except Exception as exc:  # noqa: BLE001 — surfaced to the user
+            self.notify(f"generation failed: {exc}", severity="error", timeout=8)
+            return
+        if not result.ok:
+            self.notify("couldn't build a valid workflow — try rephrasing",
+                        severity="warning", timeout=6)
+            return
+        name = result.draft._raw().get("name", "generated")
+        if not _NAME_RE.match(name):
+            name = "generated"
+        path = self.workflow_path.parent / f"{name}.yaml"
+        path.write_text(result.yaml)
+        self.workflow_path = path
+        self.sub_title = f"{name} — {path}"
+        self.action_reload()
+        self.watch_file()
+        self.notify(f"built {path.name} — press r to run", timeout=6)
+
+    def action_generate(self) -> None:
+        self._palette_generate()
 
     # ------------------------------------------------------------ palette
 

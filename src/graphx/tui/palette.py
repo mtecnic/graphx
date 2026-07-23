@@ -220,6 +220,70 @@ class NewWorkflowScreen(ModalScreen[tuple[str, str] | None]):
         self.dismiss(None)
 
 
+class PromptScreen(ModalScreen[str | None]):
+    """A single free-text prompt (used for NL generate / edit)."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #prompt-area { height: 8; }
+    """
+
+    def __init__(self, title: str, placeholder: str) -> None:
+        super().__init__()
+        self._title = title
+        self._placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label(f"[bold]{self._title}[/bold]")
+            yield TextArea("", id="prompt-area")
+            yield Label(f"[dim]{self._placeholder}[/dim]")
+            with Horizontal(id="modal-buttons"):
+                yield Button("cancel", id="cancel")
+                yield Button("go", id="go", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        text = self.query_one("#prompt-area", TextArea).text.strip()
+        if not text:
+            self.notify("type something first", severity="error")
+            return
+        self.dismiss(text)
+
+
+class AddEndpointScreen(ModalScreen[object | None]):
+    """Type an OpenAI-compatible endpoint URL; probe it and return the Endpoint."""
+
+    DEFAULT_CSS = _MODAL_CSS
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label("[bold]add an inference endpoint[/bold]")
+            yield Input(placeholder="URL, e.g. http://192.168.1.50:8000 or "
+                                    "http://host:11434", id="endpoint-url")
+            yield Label("", id="endpoint-status")
+            with Horizontal(id="modal-buttons"):
+                yield Button("cancel", id="cancel")
+                yield Button("probe", id="probe", variant="primary")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        url = self.query_one("#endpoint-url", Input).value.strip()
+        if not url:
+            return
+        self.query_one("#endpoint-status", Label).update(f"probing {url}…")
+        from ..llm.discovery import add_endpoint
+        endpoint = await add_endpoint(url)
+        if endpoint is None:
+            self.query_one("#endpoint-status", Label).update(
+                "[red]no LLM server there[/red]")
+            return
+        self.dismiss(endpoint)
+
+
 class ConnectorScreen(ModalScreen[dict | None]):
     """Pick a service connector and fill its fields → returns a render spec."""
 

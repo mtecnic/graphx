@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -105,6 +106,58 @@ async def probe(host: str, port: int, client: httpx.AsyncClient,
                             models=models, response_ms=elapsed_ms,
                             checked_at=time.time())
         return None
+
+
+def _normalize_url(url: str) -> tuple[str, str, int]:
+    """A typed value → (origin, host, port). Accepts bare host, host:port, or
+    a full URL (https, trailing /v1, custom path stripped to origin)."""
+    raw = url.strip()
+    if "://" not in raw:
+        raw = "http://" + raw
+    parts = urlsplit(raw)
+    scheme = parts.scheme or "http"
+    host = parts.hostname or "localhost"
+    port = parts.port or (443 if scheme == "https" else 80)
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return f"{scheme}://{netloc}", host, port
+
+
+async def probe_url(url: str, client: httpx.AsyncClient | None = None) -> Endpoint | None:
+    """Probe a user-typed endpoint URL directly (any scheme/host/port)."""
+    origin, host, port = _normalize_url(url)
+    own = client is None
+    http = client or httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0))
+    try:
+        started = time.monotonic()
+        openai_data, ollama_data = await asyncio.gather(
+            _get_json(http, f"{origin}/v1/models"),
+            _get_json(http, f"{origin}/api/tags"),
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if openai_data is not None and isinstance(openai_data.get("data"), list):
+            models = tuple(str(m.get("id")) for m in openai_data["data"] if m.get("id"))
+            kind = "ollama" if ollama_data is not None else "openai"
+            return Endpoint(base_url=f"{origin}/v1", kind=kind, host=host, port=port,
+                            models=models, response_ms=elapsed_ms, checked_at=time.time())
+        if ollama_data is not None and isinstance(ollama_data.get("models"), list):
+            models = tuple(str(m.get("name")) for m in ollama_data["models"]
+                           if m.get("name"))
+            return Endpoint(base_url=f"{origin}/v1", kind="ollama", host=host, port=port,
+                            models=models, response_ms=elapsed_ms, checked_at=time.time())
+        return None
+    finally:
+        if own:
+            await http.aclose()
+
+
+async def add_endpoint(url: str) -> Endpoint | None:
+    """Probe a URL and, if it's a live LLM server, merge it into the cache."""
+    endpoint = await probe_url(url)
+    if endpoint is None:
+        return None
+    others = [e for e in load_cache() if (e.host, e.port) != (endpoint.host, endpoint.port)]
+    save_cache([endpoint, *others])
+    return endpoint
 
 
 def _local_subnet() -> str | None:

@@ -215,6 +215,45 @@ class TestApp:
         graph = load_graph(wf)
         assert graph.nodes["notify"].config["url"] == "secret://slack_webhook_url"
 
+    async def test_generate_writes_and_loads_workflow(self, tmp_path, monkeypatch):
+        import shutil
+
+        monkeypatch.setenv("GRAPHX_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr("graphx.secrets._keyring", lambda: None)
+        wf = tmp_path / "hello.yaml"
+        shutil.copy(HELLO, wf)
+
+        # stub the builder so no LLM is needed
+        from graphx.builder.draft import WorkflowDraft
+        from graphx.builder.result import BuildResult
+        generated = ("version: 1\nname: made\nentry: [s]\n"
+                     'nodes:\n  - {id: s, type: shell, command: ["echo", "x"]}\n'
+                     "edges:\n  - {from: s, to: end}\n")
+        draft = WorkflowDraft.from_dict(__import__("ruamel.yaml", fromlist=["YAML"])
+                                        .YAML(typ="safe", pure=True).load(generated))
+
+        async def fake_build(**kwargs):
+            return BuildResult(ok=True, yaml=generated, draft=draft)
+        monkeypatch.setattr("graphx.builder.build_workflow", fake_build)
+
+        import time as _time
+
+        from graphx.llm.discovery import Endpoint
+        from graphx.tui.palette import PromptScreen
+        app = GraphxApp(load_graph(wf), workflow_path=wf)
+        app.endpoints = [Endpoint(base_url="http://127.0.0.1:8000/v1", kind="openai",
+                                  host="127.0.0.1", port=8000, models=("m",),
+                                  checked_at=_time.time())]
+        async with app.run_test(size=(120, 45)) as pilot:
+            app._palette_generate()
+            await pilot.pause()
+            assert isinstance(app.screen, PromptScreen)
+            app.screen.query_one("#prompt-area").text = "echo x"
+            await pilot.click("#go")
+            await pilot.pause()
+        assert (tmp_path / "made.yaml").exists()
+        assert app.graph.name == "made"
+
     async def test_full_run_inside_tui(self, hello_graph, tmp_path):
         app = GraphxApp(hello_graph, workflow_path=HELLO,
                         db_path=tmp_path / "test.db")
