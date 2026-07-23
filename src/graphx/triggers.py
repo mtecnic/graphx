@@ -63,8 +63,10 @@ def parse_trigger(raw: dict[str, Any]) -> Trigger:
         every = raw.get("every")
         if every is None:
             raise TriggerError("interval trigger needs 'every' (e.g. 15m)")
-        return Trigger("interval", every_s=_duration(every),
-                       input=dict(raw.get("input") or {}))
+        every_s = _duration(every)
+        if every_s <= 0:
+            raise TriggerError(f"interval 'every' must be positive, got {every!r}")
+        return Trigger("interval", every_s=every_s, input=dict(raw.get("input") or {}))
     if ttype == "webhook":
         path = raw.get("path")
         if not path:
@@ -94,4 +96,12 @@ def load_triggers(source: str | Path | dict[str, Any]) -> list[Trigger]:
     raw_triggers = data.get("triggers") or []
     if not isinstance(raw_triggers, list):
         raise TriggerError("'triggers' must be a list")
-    return [parse_trigger(dict(t)) for t in raw_triggers]
+    # parse each independently: one malformed trigger must not drop the others
+    out: list[Trigger] = []
+    for raw in raw_triggers:
+        try:
+            out.append(parse_trigger(dict(raw)))
+        except TriggerError as exc:
+            import logging
+            logging.getLogger("graphx.triggers").warning("skipping trigger: %s", exc)
+    return out

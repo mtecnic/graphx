@@ -51,6 +51,12 @@ def _graph_secret_refs(graph) -> set[str]:
     return names
 
 
+def _env_refs(workflow_text: str) -> set[str]:
+    """${VAR} names the workflow needs at run time (they resolve from env)."""
+    from .model.yaml_loader import _ENV_RE
+    return set(_ENV_RE.findall(workflow_text))
+
+
 def _build_wheel(out_dir: Path) -> str:
     """Build the graphx wheel into out_dir; return its filename."""
     root = Path(__file__).resolve().parent.parent.parent   # repo root (src/graphx/..)
@@ -64,7 +70,8 @@ def _build_wheel(out_dir: Path) -> str:
     wheels = list(out_dir.glob("graphx-*.whl"))
     if not wheels:
         raise ExportError("wheel build produced no graphx-*.whl")
-    return wheels[0].name
+    # a re-export into an existing dir may hold stale wheels — take the newest
+    return max(wheels, key=lambda p: p.stat().st_mtime).name
 
 
 _RUN_PY = '''\
@@ -148,8 +155,9 @@ def export_workflow(workflow: str | Path, out_dir: str | Path | None = None,
     extra_str = f"[{','.join(extras)}]" if extras else ""
     (out / "requirements.txt").write_text(f"./{wheel}{extra_str}\n")
 
-    # 4. .env.example (names only, never values)
-    secrets = sorted(_graph_secret_refs(graph))
+    # 4. .env.example (names only, never values): both secret:// and ${ENV} refs
+    workflow_text = workflow.read_text()
+    secrets = sorted(_graph_secret_refs(graph) | _env_refs(workflow_text))
     env_lines = [f"{s}=" for s in secrets] or ["# (this workflow needs no secrets)"]
     (out / ".env.example").write_text("\n".join(env_lines) + "\n")
 

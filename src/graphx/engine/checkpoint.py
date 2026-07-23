@@ -49,7 +49,7 @@ class Checkpoint:
     frontier: tuple[TaskSpec, ...]
     node_outputs: dict[str, Any]
     visits: dict[str, int]
-    join_arrivals: dict[str, dict[str, bool]]   # merge node -> {source: succeeded}
+    join_arrivals: dict[str, dict[str, str]]   # merge node -> {source: ok|failed|skipped}
     pending_interrupt: Interrupt | None
     metrics: RunMetrics
     dead_letters: tuple[DeadLetter, ...]

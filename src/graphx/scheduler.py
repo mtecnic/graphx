@@ -46,8 +46,27 @@ class Scheduler:
 
     def add(self, workflow: Path, triggers: list[Trigger]) -> None:
         for trigger in triggers:
-            if trigger.type in ("schedule", "interval"):
-                self.jobs.append(ScheduledJob(Path(workflow), trigger))
+            if trigger.type not in ("schedule", "interval"):
+                continue
+            if trigger.type == "schedule" and not self._cron_ok(trigger.cron):
+                continue                      # bad cron / no croniter — skip, don't crash
+            self.jobs.append(ScheduledJob(Path(workflow), trigger))
+
+    @staticmethod
+    def _cron_ok(cron: str | None) -> bool:
+        try:
+            from croniter import croniter
+        except ImportError:
+            import logging
+            logging.getLogger("graphx.scheduler").warning(
+                "croniter not installed; schedule trigger '%s' ignored", cron)
+            return False
+        if not croniter.is_valid(str(cron)):
+            import logging
+            logging.getLogger("graphx.scheduler").warning(
+                "invalid cron '%s'; schedule ignored", cron)
+            return False
+        return True
 
     def start(self) -> None:
         for job in self.jobs:
@@ -55,8 +74,13 @@ class Scheduler:
 
     async def _run_job(self, job: ScheduledJob) -> None:
         while True:
-            delay = next_delay(job.trigger, self._clock())
-            job.next_fire = self._clock()
+            try:
+                delay = next_delay(job.trigger, self._clock())
+            except Exception:  # noqa: BLE001 — a cron eval failure must not kill the job
+                import logging
+                logging.getLogger("graphx.scheduler").exception(
+                    "next-fire computation failed for %s; retrying in 60s", job.workflow)
+                delay = 60.0
             try:
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:

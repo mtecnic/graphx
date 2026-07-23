@@ -245,6 +245,12 @@ class Executor:
 
                 step += 1
                 frontier = outcome.frontier
+                # if nothing else will run but merges are still waiting on
+                # branches that were pruned upstream, fire them now (missing
+                # sources = skipped) instead of silently dropping them.
+                if not frontier and join_arrivals:
+                    frontier = self.scheduler.flush_pending_merges(
+                        join_arrivals, visits).frontier
                 await self._save(thread_id, run_id, step, state, frontier, node_outputs,
                                  visits, join_arrivals, None, metrics, dead_letters)
                 await self.bus.emit(EventType.CHECKPOINT_SAVED, step=step)

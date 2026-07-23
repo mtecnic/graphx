@@ -48,16 +48,35 @@ class Scheduler:
         outcome.frontier.append(TaskSpec(node_id=target, item=item,
                                          collect_channel=collect_channel))
 
-    def _arrive_at_merge(self, merge_id: str, source: str, succeeded: bool,
-                         join_arrivals: dict[str, dict[str, bool]],
+    def _arrive_at_merge(self, merge_id: str, source: str, state: str,
+                         join_arrivals: dict[str, dict[str, str]],
                          outcome: RouteOutcome, visits: dict[str, int]) -> None:
+        # state is one of "ok" | "failed" | "skipped" — a skipped branch must
+        # neither count against the merge nor make it wait forever.
         arrivals = join_arrivals.setdefault(merge_id, {})
-        arrivals[source] = succeeded
+        arrivals[source] = state
         expected = {e.source for e in self.graph.edges_to(merge_id)}
         if set(arrivals) >= expected:
             self._schedule(merge_id, outcome, visits,
                            item={"arrivals": dict(arrivals)})
             join_arrivals.pop(merge_id, None)
+
+    def flush_pending_merges(self, join_arrivals: dict[str, dict[str, str]],
+                             visits: dict[str, int]) -> RouteOutcome:
+        """Fire merges still waiting on branches that will never arrive.
+
+        Called when the frontier is empty (no further supersteps): any source
+        a pending merge is still expecting was pruned upstream, so treat the
+        missing ones as skipped and let the merge proceed with what it has.
+        """
+        outcome = RouteOutcome()
+        for merge_id, arrivals in list(join_arrivals.items()):
+            full = dict(arrivals)
+            for src in {e.source for e in self.graph.edges_to(merge_id)}:
+                full.setdefault(src, "skipped")
+            join_arrivals.pop(merge_id, None)
+            self._schedule(merge_id, outcome, visits, item={"arrivals": full})
+        return outcome
 
     def route_success(self, node_id: str, result_goto: tuple[str, ...] | None,
                       sends: tuple, state_values: dict[str, Any],
@@ -69,10 +88,10 @@ class Scheduler:
 
         if result_goto is not None:
             targets = list(result_goto)
-            # potential merge targets we routed away from must not deadlock
+            # merge targets we routed away from arrive as "skipped" (not failed)
             for edge in edges:
                 if edge.target not in targets and _is_merge(self.graph, edge.target):
-                    self._arrive_at_merge(edge.target, node_id, False,
+                    self._arrive_at_merge(edge.target, node_id, "skipped",
                                           join_arrivals, outcome, visits)
         else:
             targets = []
@@ -81,12 +100,12 @@ class Scheduler:
                 if taken:
                     targets.append(edge.target)
                 elif _is_merge(self.graph, edge.target):
-                    self._arrive_at_merge(edge.target, node_id, False,
+                    self._arrive_at_merge(edge.target, node_id, "skipped",
                                           join_arrivals, outcome, visits)
 
         for target in targets:
             if target != END and _is_merge(self.graph, target):
-                self._arrive_at_merge(target, node_id, True,
+                self._arrive_at_merge(target, node_id, "ok",
                                       join_arrivals, outcome, visits)
             else:
                 self._schedule(target, outcome, visits)
@@ -96,7 +115,7 @@ class Scheduler:
                            item=send.payload, collect_channel=send.collect_channel)
 
     def route_failure(self, node_id: str, visits: dict[str, int],
-                      join_arrivals: dict[str, dict[str, bool]],
+                      join_arrivals: dict[str, dict[str, str]],
                       outcome: RouteOutcome) -> None:
         error_edges = self.graph.edges_from(node_id, kind="on_error")
         normal_targets = [e.target for e in self.graph.edges_from(node_id)]
@@ -109,7 +128,7 @@ class Scheduler:
         if merge_targets and len(merge_targets) == len(normal_targets):
             # every downstream is a merge: settled semantics, branch failure tolerated
             for target in merge_targets:
-                self._arrive_at_merge(target, node_id, False,
+                self._arrive_at_merge(target, node_id, "failed",
                                       join_arrivals, outcome, visits)
             return
         outcome.fatal_failures.append(node_id)

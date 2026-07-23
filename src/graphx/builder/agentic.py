@@ -76,7 +76,10 @@ def _make_dispatch(draft: WorkflowDraft, catalog: Catalog):
         if a.get("type") not in known_types():
             return f"error: unknown node type '{a.get('type')}' " \
                    f"(have: {', '.join(sorted(known_types()))})"
-        node = {"id": a["id"], "type": a["type"], **(a.get("config") or {})}
+        # id/type first (readable YAML) AND unclobberable by a nested config
+        config = {k: v for k, v in (a.get("config") or {}).items()
+                  if k not in ("id", "type")}
+        node = {"id": a["id"], "type": a["type"], **config}
         draft.add_node(node, after=a.get("after"))
         return f"added node '{a['id']}'"
 

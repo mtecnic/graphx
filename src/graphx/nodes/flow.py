@@ -84,6 +84,7 @@ async def map_node(ctx: NodeContext) -> NodeResult:
     template_type = get_node_type(str(template.pop("type", "")))
     semaphore = asyncio.Semaphore(config.max_concurrency)
     results: list[Any] = [None] * len(items)
+    ok: list[bool] = [False] * len(items)      # per-index success (None is a valid output)
     errors: list[dict[str, Any]] = []
 
     async def run_item(index: int, item: Any) -> None:
@@ -104,6 +105,7 @@ async def map_node(ctx: NodeContext) -> NodeResult:
             try:
                 result = await template_type.handler(item_ctx)
                 results[index] = result.output
+                ok[index] = True
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — settled per item
@@ -112,11 +114,19 @@ async def map_node(ctx: NodeContext) -> NodeResult:
                 errors.append({"index": index, "error": str(exc),
                                "error_type": type(exc).__name__})
 
-    async with asyncio.TaskGroup() as group:
-        for index, item in enumerate(items):
-            group.create_task(run_item(index, item))
+    try:
+        async with asyncio.TaskGroup() as group:
+            for index, item in enumerate(items):
+                group.create_task(run_item(index, item))
+    except BaseExceptionGroup as eg:
+        # on_item_error="fail": surface the underlying error (preserving its
+        # transient classification / CancelledError), not the group wrapper.
+        exc: BaseException = eg
+        while isinstance(exc, BaseExceptionGroup):
+            exc = exc.exceptions[0]
+        raise exc from None
 
-    collected = [r for r in results if r is not None] if errors else results
+    collected = [results[i] for i in range(len(items)) if ok[i]]
     updates = {config.collect.channel: collected} if config.collect else {}
     return NodeResult(output={"results": collected, "errors": errors,
                               "count": len(collected)},
@@ -133,12 +143,16 @@ class MergeConfig(BaseModel):
 @node_type("merge", config_model=MergeConfig)
 async def merge_node(ctx: NodeContext) -> NodeResult:
     config: MergeConfig = ctx.config  # type: ignore[assignment]
-    arrivals: dict[str, bool] = (ctx.item or {}).get("arrivals", {})
-    successes = sum(1 for ok in arrivals.values() if ok)
+    # arrivals maps source -> "ok" | "failed" | "skipped". A skipped branch
+    # (routed away by a condition) neither counts toward the threshold nor
+    # against it; the default threshold is "every branch that actually ran".
+    arrivals: dict[str, str] = (ctx.item or {}).get("arrivals", {})
+    successes = sum(1 for st in arrivals.values() if st == "ok")
+    required = sum(1 for st in arrivals.values() if st != "skipped")
     threshold = config.success_threshold if config.success_threshold is not None \
-        else len(arrivals)
+        else required
     if successes < threshold:
         raise GraphxError(
-            f"merge '{ctx.node.id}': only {successes}/{len(arrivals)} branches succeeded "
+            f"merge '{ctx.node.id}': only {successes}/{required} branches succeeded "
             f"(threshold {threshold})")
     return NodeResult(output={"arrivals": arrivals, "successes": successes})
