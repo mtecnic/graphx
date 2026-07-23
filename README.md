@@ -198,6 +198,50 @@ The CLI, the TUI, and the HTTP API all consume the **same** `RunEvent` stream. T
 
 ---
 
+## Run it on a schedule, or on an event
+
+Add a `triggers:` block and a workflow runs *itself* — the difference between "a pipeline I run" and "a pipeline that handled 40 emails while I slept."
+
+```yaml
+triggers:
+  - { type: schedule, cron: "0 7 * * *" }              # daily at 07:00
+  - { type: interval, every: 15m }                      # every 15 minutes
+  - { type: webhook, path: "orders", input_from: body } # POST /hooks/orders → runs, body = input
+```
+
+```bash
+graphx serve examples --port 8420      # daemon: fires schedules/intervals, receives webhooks
+curl -X POST localhost:8420/hooks/orders -d '{"order_id": 4821}'   # trigger on demand
+```
+
+Prefer the OS to keep it alive? Emit a **systemd user timer** (or a crontab line) for a schedule-only workflow — no daemon required:
+
+```bash
+graphx schedule daily.yaml --cron "0 7 * * *" --install     # writes + enables a systemd timer
+graphx schedule daily.yaml --cron "0 7 * * *" --crontab      # or print a crontab line
+```
+
+---
+
+## Export it — runs on any machine
+
+Turn a workflow into a **self-contained, portable program**. No graphx install on the target, no internet-to-a-private-repo, no secrets baked in.
+
+```bash
+graphx export myflow.yaml --docker
+#  → myflow_export/  ·  myflow.yaml + run.py + requirements.txt + .env.example + Dockerfile
+#                       + a bundled graphx wheel
+
+cd myflow_export
+python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+cp .env.example .env        # fill in any secrets (as env vars)
+./venv/bin/python run.py    # …or: docker build -t myflow . && docker run --env-file .env myflow
+```
+
+graphx installs from the bundled wheel; its dependencies come from PyPI; credentials come from *your* `.env` (nothing sensitive is ever written into the export).
+
+---
+
 ## Examples
 
 | file | what it shows |
@@ -207,18 +251,19 @@ The CLI, the TUI, and the HTTP API all consume the **same** `RunEvent` stream. T
 | `examples/email_triage.yaml` | Classify inbox mail and draft replies on your own model, behind a human gate |
 | `examples/agent_demo.yaml` | Minimal live-LLM demo — agent writes, router branches on the result |
 | `examples/approval.yaml` | Human-in-the-loop gate: draft → approve → publish |
+| `examples/scheduled_report.yaml` | Triggers demo — runs daily on a cron and on a webhook |
 
 ---
 
 ## CLI reference
 
-`generate` · `edit` · `new` · `connectors` · `add` · `providers [--scan|--add <url>]` · `secret set/list/rm` · `scaffold-api` · `validate` · `run` · `resume` · `events` · `history` · `tui` · `serve`
+`generate` · `edit` · `new` · `connectors` · `add` · `providers [--scan|--add <url>]` · `secret set/list/rm` · `scaffold-api` · `schedule` · `export` · `validate` · `run` · `resume` · `events` · `history` · `tui` · `serve`
 
 ---
 
 ## Status
 
-**v0.6** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 224 tests, ruff-clean, Python 3.12+.
+**v0.7** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 250 tests, ruff-clean, Python 3.12+.
 
 *Roadmap: richer TUI edge routing, a run browser, remote run control, provider pricing tables, PyPI publish, more connectors.*
 

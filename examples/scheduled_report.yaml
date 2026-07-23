@@ -1,0 +1,23 @@
+version: 1
+name: scheduled_report
+description: >
+  Demonstrates triggers — this workflow runs itself. Under `graphx serve`
+  it fires every morning at 7am, and also on demand via a webhook.
+
+triggers:
+  - { type: schedule, cron: "0 7 * * *" }          # daily at 07:00
+  - { type: webhook, path: "report", input_from: body }   # POST /hooks/report
+
+state:
+  note: { type: str, default: "" }
+
+entry: [say]
+
+nodes:
+  - id: say
+    type: shell
+    command: ["sh", "-c", "echo 'report generated at' $(date -u +%H:%M:%S)"]
+    updates: { note: "<self.stdout>" }
+
+edges:
+  - { from: say, to: end }

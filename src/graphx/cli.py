@@ -741,13 +741,87 @@ def serve(dir: Annotated[Path, typer.Argument(help="directory of workflow yamls"
           host: Annotated[str, typer.Option()] = "127.0.0.1",
           port: Annotated[int, typer.Option()] = 8420,
           db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
+          triggers: Annotated[bool, typer.Option(help="run schedule/interval/webhook "
+                                                 "triggers from the workflows")] = True,
           ) -> None:
-    """Serve the HTTP API (REST + SSE event streams)."""
+    """Serve the HTTP API + trigger daemon (schedules, intervals, webhooks)."""
     import uvicorn
 
     from .server.app import create_app
-    console.print(f"[bold]graphx API[/bold] http://{host}:{port} — workflows from {dir}")
-    uvicorn.run(create_app(dir, db), host=host, port=port, log_level="info")
+    trig = " + triggers" if triggers else ""
+    console.print(f"[bold]graphx API{trig}[/bold] http://{host}:{port} — workflows from {dir}")
+    uvicorn.run(create_app(dir, db, triggers=triggers), host=host, port=port,
+                log_level="info")
+
+
+@app.command()
+def schedule(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+             cron: Annotated[str, typer.Option(help='cron expression, e.g. "0 7 * * *"')],
+             install: Annotated[bool, typer.Option("--install", help="write + enable a "
+                                                   "systemd user timer")] = False,
+             crontab: Annotated[bool, typer.Option("--crontab", help="print a crontab line "
+                                                   "instead of systemd units")] = False,
+             ) -> None:
+    """Schedule a workflow to run via the OS (systemd user timer or crontab)."""
+    from .units import crontab_line, systemd_units
+
+    graph = _load(workflow)
+    if crontab:
+        console.print(crontab_line(workflow, cron))
+        console.print("[dim]add it with: (crontab -l; echo '<line>') | crontab -[/dim]")
+        return
+
+    units = systemd_units(graph.name, workflow, cron)
+    if not install:
+        console.print(f"[bold]{units.service_path}[/bold]\n{units.service}")
+        console.print(f"[bold]{units.timer_path}[/bold]\n{units.timer}")
+        console.print("[dim]write + enable them with --install[/dim]")
+        return
+
+    units.service_path.parent.mkdir(parents=True, exist_ok=True)
+    units.service_path.write_text(units.service)
+    units.timer_path.write_text(units.timer)
+    console.print(f"[green]✔[/green] wrote {units.service_path.name} + "
+                  f"{units.timer_path.name}")
+    console.print("  enable it: [bold]systemctl --user daemon-reload && "
+                  f"systemctl --user enable --now graphx-{graph.name}.timer[/bold]")
+
+
+@app.command("schedules")
+def list_schedules() -> None:
+    """List installed graphx systemd user timers."""
+    from pathlib import Path as _P
+    unit_dir = _P.home() / ".config" / "systemd" / "user"
+    timers = sorted(unit_dir.glob("graphx-*.timer")) if unit_dir.exists() else []
+    if not timers:
+        console.print("[yellow]no installed graphx timers[/yellow]")
+        return
+    for timer in timers:
+        console.print(f"  [bold]{timer.stem}[/bold]  [dim]{timer}[/dim]")
+
+
+@app.command()
+def export(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+           out: Annotated[Path | None, typer.Option("--out", help="output directory")] = None,
+           docker: Annotated[bool, typer.Option("--docker", help="also emit a Dockerfile")] = False,
+           ) -> None:
+    """Export a workflow as a portable, self-contained project folder."""
+    from .export import ExportError, export_manifest, export_workflow
+
+    with console.status("building a portable bundle…"):
+        try:
+            folder = export_workflow(workflow, out, docker=docker)
+        except ExportError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+    console.print(f"[green]✔[/green] exported to [bold]{folder}[/bold]")
+    for f in export_manifest(folder):
+        console.print(f"  {f}")
+    console.print(f"\n  run it anywhere:\n"
+                  f"    cd {folder} && python3 -m venv venv && "
+                  f"./venv/bin/pip install -r requirements.txt\n"
+                  f"    cp .env.example .env   # fill in any secrets\n"
+                  f"    ./venv/bin/python run.py")
 
 
 if __name__ == "__main__":
