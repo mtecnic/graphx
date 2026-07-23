@@ -1,160 +1,229 @@
+<div align="center">
+
 # graphx
 
-**TUI-native designer and runner for agentic workflows.**
+**Point it at your own LLM and describe what you want — it builds the agent workflow, and runs it in your terminal.**
 
-graphx lets you define flow-chart-like agent pipelines — with loops, branches, parallel fan-outs, and human approval gates — in a plain YAML file, then run and watch them live in your terminal. Nodes can be LLM agents, external HTTP APIs, MCP tools, Python functions, or shell commands.
+A TUI-native designer and runner for agentic workflows: flow-chart pipelines with loops, branches, parallel fan-out, human approval gates, and real resilience — defined in plain YAML, generated from natural language, and driven live from the terminal, an HTTP API, or code.
 
+*Local-first · no SDK lock-in · your models, your machine, your data.*
+
+</div>
+
+---
+
+```console
+$ graphx providers --add http://localhost:8000        # point at any OpenAI-compatible server
+  ✔ added openai_local_8000  →  qwen3.6-27b
+
+$ graphx generate "fetch a GitHub repo's JSON, summarize the description
+                   with the local model, then save it to a file"
+  ✔ valid workflow generated  (oneshot, ~2.8k tokens)
+
+$ graphx run repo_summary.yaml
+  ✔ fetch → ✔ summarize → ✔ save        # ran on your own model, start to finish
 ```
-┌─────────────┐     ┌─────────────┐
-│ fetch_trends│──┐  │ search_docs │
-└─────────────┘  │  └──────┬──────┘
-                 ▼         ▼
-              ┌──────────────┐      ┌─────────────┐
-              │    gather    │─────▶│ write_draft │◀─┐
-              └──────────────┘      └──────┬──────┘  │
-                                           ▼         │
-                                    ┌─────────────┐  │
-                                    │ score_draft │──┘ (loop until good)
-                                    └─────────────┘
+
+That's the whole loop: **connect a model by URL, describe a pipeline in English, get a working workflow, run it** — all offline on your hardware.
+
+---
+
+## Why graphx
+
+Most "agent builders" are either web-based node canvases you can't script, or code-only engines with no UI. graphx is the missing middle, in the terminal:
+
+- 🧠 **Build from natural language** — a description becomes a real, valid workflow, self-correcting against a schema validator. Two engines (reliable one-shot + agentic tool-driven).
+- 🔌 **Point at any endpoint** — type a URL for vLLM / llama.cpp / Ollama / LM Studio / a gateway; graphx probes it and auto-discovers the model. It also scans your LAN on startup.
+- ⚙️ **A real engine, not a toy** — Pregel-style supersteps, cyclic graphs with loops, shared state with reducers, per-step SQLite checkpointing. Kill a run mid-flight; `resume` continues from the last step.
+- 🛡️ **Resilience per node** — retries with backoff, model fallback chains, validation re-asks, timeouts, token/cost/deadline budgets, `on_error` edges, dead-letters.
+- 🔐 **Credentials done right** — `secret://NAME` resolves only at the point of use and never leaks into files, checkpoints, logs, SSE, or the screen.
+- 🧩 **Batteries included** — 12 credential-wired connectors (Slack, Discord, Telegram, SendGrid, SMTP, Gmail, GitHub, GitLab, Postgres, S3, webhooks) and OpenAPI auto-scaffolding for anything else.
+- 📄 **YAML is the source of truth** — layout-free, diffable, hand-editable. The TUI renders it; it never owns it.
+
+---
+
+## Install
+
+```bash
+python3 -m venv venv
+./venv/bin/pip install -e ".[tui,mcp,server]"     # extras: keyring, postgres, s3
+./venv/bin/graphx tui                             # opens a workflow here, or scaffolds a demo
 ```
 
-## Design principles
+Python 3.12+. Nothing leaves your machine unless a node you add reaches out.
 
-- **YAML is the source of truth** — layout-free, diffable, hand-editable. The TUI renders it; it never owns it.
-- **Pregel-style engine** — shared state channels with reducers, supersteps, cycles bounded by guards, full-snapshot checkpointing to SQLite. Kill it mid-run; `graphx resume` continues from the last superstep.
-- **Resilience built in per node** — transient retries with backoff, model fallback chains, validation re-asks, timeouts, budgets, `on_error` edges, dead-letters. Four independent guards (steps / tokens / deadline / retries) stop runaway loops.
-- **One event stream** — the CLI, the TUI, and the HTTP API all consume the same `RunEvent` stream.
+---
+
+## The workflow, in one file
+
+```yaml
+version: 1
+name: research_review
+providers:
+  local: { base_url: "http://localhost:8000/v1", protocol: openai }
+state:
+  topic:   { type: str }
+  draft:   { type: str, default: "" }
+entry: [fetch, search]                 # parallel fan-out
+nodes:
+  - { id: fetch,  type: api,  url: "https://api/trends?q=<state.topic>",
+      headers: { Authorization: "Bearer secret://trends_key" } }
+  - { id: search, type: mcp,  server: docs, tool: search, args: { q: "<state.topic>" } }
+  - { id: gather, type: merge, success_threshold: 1 }             # barrier join
+  - id: write
+    type: agent
+    model: "local/qwen3.6-27b"
+    prompt: "Topic <state.topic>. Trends <fetch.json>. Docs <search.text>. Write a brief."
+    output_schema: { draft: str }                                # validated JSON
+    fallbacks: [ { static: { draft: "unavailable" } } ]          # degrade gracefully
+    updates: { draft: "<self.draft>" }
+  - id: review
+    type: human                                                  # pause for approval
+    prompt: "Ship this?"
+    choices: [approve, revise]
+edges:
+  - { from: fetch,  to: gather }
+  - { from: search, to: gather }
+  - { from: gather, to: write }
+  - { from: write,  to: review }
+  - { from: review, to: end,   when: "review.choice == 'approve'" }
+  - { from: review, to: write, when: "review.choice == 'revise'" }   # loop back
+```
+
+Loops, parallelism, secrets, LLM fallback, and a human gate — in ~25 lines.
+
+---
+
+## Build it from a sentence
+
+```bash
+graphx providers --add http://192.168.1.50:8000   # probe a URL → discovers the model
+graphx generate "poll an RSS feed hourly, summarize new items, post to Slack"
+graphx edit myflow.yaml "add a human approval gate before the Slack post"
+```
+
+- **Grounded, not guessing.** The model is handed a compact catalog of every node type + connector + the reference syntax, and its output is checked by the same validator `graphx run` uses. Invalid → the exact errors are fed back for a bounded repair loop. The result is *always* either valid or clearly flagged for a one-line fix.
+- **Two engines.** `oneshot` (default) emits the whole workflow and repairs it — reliable even on small local models. `--agentic` drives builder tools step by step for capable models.
+- **In the TUI**, press `g`, type your idea, and the generated graph renders in place, ready to run or tweak.
+
+It's an editable first draft, not an oracle — quality scales with your model, and the validator keeps it honest.
+
+---
+
+## Design & run in the TUI
+
+```bash
+graphx tui examples/hello.yaml
+```
+
+A lazygit-style shell: the graph on the left (live node status as it runs), node detail and streaming logs on the right.
+
+| key | action | | key | action |
+|---|---|---|---|---|
+| `r` | run live | | `g` | **generate from a description** |
+| `n` | new from template | | `a` | add node |
+| `o` | node from an OpenAPI spec | | `i` | add a service connector |
+| `c` | connect nodes | | `k` | manage secrets |
+| `e` | edit YAML in `$EDITOR` | | `q` | quit |
+
+Every edit writes straight back to the YAML, and the file is watched — edit in vim in another pane and the graph redraws itself.
+
+---
 
 ## Node types
 
-| kind | types |
+| group | types |
 |---|---|
-| work | `agent` (LLM + tools + validated JSON output), `api` (HTTP + `$.json.paths`), `mcp` (MCP tool call), `function` (Python), `shell` (subprocess/CLI agents) |
-| flow | `condition`, `router` (LLM-chosen path), `map` (fan-out over a collection), `merge` (barrier join with success threshold), `subworkflow` |
-| control | `human` (approval gate — interrupts, resumable), `wait` |
+| **work** | `agent` (LLM + tools + validated JSON output) · `api` (HTTP + `$.json.path` extraction) · `mcp` (MCP tool call) · `function` (Python) · `shell` (subprocess / CLI agents) |
+| **flow** | `condition` (branch + loop) · `router` (LLM picks the path) · `map` (fan-out over a collection) · `merge` (barrier join with a success threshold) · `subworkflow` |
+| **control** | `human` (approval gate — interrupts, resumable) · `wait` |
 
-LLM providers are configured per workflow (`providers:`) — anything OpenAI-compatible (vLLM, Ollama, LM Studio, gateways) plus native Anthropic. No SDK dependencies.
+References: `<node.field>`, `<state.key>`, `<item.x>`, `secret://NAME`. Edges carry `when:` expressions. LLM providers are per-workflow — anything OpenAI-compatible plus native Anthropic, no SDKs.
 
-## Build from natural language
+---
 
-Point graphx at any OpenAI-compatible server (vLLM / llama.cpp / Ollama /
-LM Studio / a gateway) and describe what you want — it builds a valid,
-runnable workflow using the full node + connector set, self-correcting
-against the validator.
+## Connectors — batteries included
 
-```bash
-graphx providers --add http://192.168.1.50:8000    # probe a URL, auto-discover its model
-graphx generate "fetch a URL, summarize it with the local model, save to a file"
-graphx edit myflow.yaml "add a Slack alert when the agent fails"
-```
-
-`generate` writes a workflow file you can `run`, `tui`, or hand-edit; it
-prompts for any credential the result needs. Two engines: `--engine
-oneshot` (default, reliable on small local models — emits the whole
-workflow and repairs it against the validator) and `--agentic` (drives
-builder tools step by step; best on capable models). In the TUI, `g`
-opens a prompt and renders the generated graph. It's an editable first
-draft, not an oracle — quality scales with your model, and the result is
-always either valid or clearly flagged for a quick fix.
-
-## Quickstart
+Drop-in, credential-wired nodes for popular services. Each declares the `secret://` it needs, so you're prompted for it automatically.
 
 ```bash
-python3 -m venv venv && ./venv/bin/pip install -e ".[tui,mcp,server]"
-./venv/bin/graphx tui                            # no args: opens the workflow here, or
-                                                 # scaffolds the bundled gpu_report demo
-./venv/bin/graphx validate examples/hello.yaml
-./venv/bin/graphx run examples/hello.yaml --input name=world
-./venv/bin/graphx tui examples/hello.yaml        # r run, e edit, a add node, o api-from-spec
-./venv/bin/graphx serve examples --port 8420     # REST + SSE API
-./venv/bin/graphx tui examples/hello.yaml --attach http://localhost:8420 --thread <id>
-```
-
-The bundled **gpu_report** demo is a real workflow: it probes GPUs
-(nvidia-smi), disk, and your local inference server in parallel, has a
-local LLM write a markdown health report with a validated schema,
-branches on severity through a human acknowledgement gate, and saves
-the report — resilience (retries, LLM fallback, budgets) included.
-
-Create a new workflow from a template (the `agent` template auto-fills a
-discovered local/LAN inference server):
-
-```bash
-./venv/bin/graphx new my_flow --template agent --tui   # blank|agent|approval|pipeline
-./venv/bin/graphx providers --scan                     # list Ollama/vLLM/llama.cpp/LM Studio endpoints
-```
-
-The TUI scans localhost and the LAN for inference servers on startup
-(ports 11434/1234/5000/8000/8080). When you add an `agent` node (`a`), the
-discovered models are offered one-click, and the matching `providers:`
-block is written into the workflow so it stays self-contained. Press `n`
-for a new workflow from a template without leaving the TUI.
-`GRAPHX_NO_LAN_SCAN=1` restricts scanning to localhost.
-
-## Secrets
-
-Credentials are referenced in workflows as `secret://NAME` and resolved
-**only at the point of use** (the outbound request, subprocess env, or
-MCP server) — never baked into the workflow file, and never written to
-checkpoints, the event log, SSE, or the TUI (a redaction net masks any
-value that slips into output). Store them once:
-
-```bash
-graphx secret set openai_key           # hidden prompt; or --value / --stdin
-graphx secret list                     # names only, never values
-```
-
-Stored 0600 in `~/.graphx/secrets.json` (or the OS keyring with the
-`[keyring]` extra). Resolution falls back to the process environment, so
-`secret://GITHUB_TOKEN` also picks up an exported `GITHUB_TOKEN`. Use in
-any node:
-
-```yaml
-- id: call
-  type: api
-  url: "https://api.example.com/data"
-  headers: { Authorization: "Bearer secret://api_key" }
-```
-
-`graphx run` refuses to start if a referenced secret is unset (with the
-exact `graphx secret set` command to fix it); the TUI (`k` opens the
-manager) prompts for any missing secret before a run.
-
-## Connectors
-
-Drop-in, credential-wired nodes for popular services — no need to look
-up API shapes. Each declares the `secret://` it needs, so the missing-
-secret flow prompts for it.
-
-```bash
-graphx connectors                                    # list all (by category)
-graphx add slack notify.yaml message="deploy done"   # inserts a wired node
+graphx add slack notify.yaml message="deploy done"
 graphx add github_issue bug.yaml owner=me repo=app title="broken"
 ```
 
-In the TUI, `i` opens the connector palette: pick a service, fill the
-fields, and it inserts the node and prompts for the credential. First
-batch:
-
 | category | connectors |
 |---|---|
-| messaging | `slack` · `discord` · `telegram` · `webhook` |
-| email | `sendgrid` · `smtp` · `gmail` (via MCP) |
-| dev | `github_issue` · `github_comment` · `gitlab_issue` |
-| data | `postgres_query` (`[postgres]`) · `s3_put` (`[s3]`) |
+| **messaging** | `slack` · `discord` · `telegram` · `webhook` |
+| **email** | `sendgrid` · `smtp` · `gmail` (via MCP) |
+| **dev** | `github_issue` · `github_comment` · `gitlab_issue` |
+| **data** | `postgres_query` · `s3_put` |
 
-Most are plain HTTP `api` nodes with a `secret://` header (zero extra
-deps); SMTP is stdlib; Postgres/S3 need an extra; Gmail wires the
-GongRzhe MCP server (file-based OAuth, set up once).
+Anything with an OpenAPI spec: `graphx scaffold-api wf.yaml http://service` builds the `api` node for you — path params, request body, and response-field extraction included.
 
-CLI: `generate` · `edit` · `new` · `connectors` · `add` · `providers [--add <url>]` · `secret set/list/rm` · `validate` · `run` · `resume <thread> --answer …` · `events <run> [--json]` · `history <thread>` · `scaffold-api` · `tui` · `serve`.
+---
 
-## HTTP API
+## Credentials that don't leak
 
-`GET /workflows` · `POST /runs {workflow, input}` · `GET /runs/{thread}` ·
-`POST /runs/{thread}/resume {answer}` · `POST /runs/{thread}/cancel` ·
-`GET /runs/{thread}/events` (SSE, honors `Last-Event-ID`).
+Reference secrets as `secret://NAME`. They resolve **only at the point of use** — the outbound request, subprocess env, or MCP server — and are never written into the workflow file, checkpoints, the event log, SSE, or the TUI (a redaction net masks any value that slips into output).
+
+```bash
+graphx secret set slack_webhook_url        # hidden prompt (or --value / --stdin)
+graphx secret list                         # names only, never values
+```
+
+Stored `0600` in `~/.graphx/secrets.json` (or the OS keyring via the `[keyring]` extra), with env-var fallback. `graphx run` refuses to start on a missing secret and tells you exactly how to set it; the TUI prompts inline.
+
+---
+
+## Resilience & durability
+
+- **Retries** — per-node exponential backoff + jitter, transient-only (429/5xx/timeout), honoring `Retry-After`.
+- **Fallbacks** — ordered model chains ending in an optional static degraded output.
+- **Guards** — four independent stops: max steps, token budget, cost budget, wall-clock deadline.
+- **Checkpoint & resume** — full state snapshot to SQLite every superstep. `kill -9` a run; `graphx resume <thread>` continues exactly where it stopped.
+- **Human-in-the-loop** — a `human` node interrupts and persists; resume from the CLI, TUI, or API.
+
+---
+
+## Run it anywhere
+
+```bash
+graphx run flow.yaml --input topic="graph engines"     # stream events in the terminal
+graphx resume <thread> --answer approve                # answer a human gate
+graphx serve examples --port 8420                      # REST + SSE server
+graphx tui flow.yaml --attach http://localhost:8420 --thread <id>   # follow a remote run
+```
+
+The CLI, the TUI, and the HTTP API all consume the **same** `RunEvent` stream. The API: `GET /workflows` · `POST /runs` · `GET /runs/{thread}` · `POST /runs/{thread}/resume` · `POST /runs/{thread}/cancel` · `GET /runs/{thread}/events` (SSE, honors `Last-Event-ID`).
+
+---
+
+## Examples
+
+| file | what it shows |
+|---|---|
+| `examples/hello.yaml` | LLM-free tour — parallel fan-out, merge, map, a counted loop |
+| `examples/gpu_report.yaml` | Real host health report: probe GPUs/disk/inference server → local LLM writes it → human gate → save |
+| `examples/email_triage.yaml` | Classify inbox mail and draft replies on your own model, behind a human gate |
+| `examples/agent_demo.yaml` | Minimal live-LLM demo — agent writes, router branches on the result |
+| `examples/approval.yaml` | Human-in-the-loop gate: draft → approve → publish |
+
+---
+
+## CLI reference
+
+`generate` · `edit` · `new` · `connectors` · `add` · `providers [--scan|--add <url>]` · `secret set/list/rm` · `scaffold-api` · `validate` · `run` · `resume` · `events` · `history` · `tui` · `serve`
+
+---
 
 ## Status
 
-v0.4 — engine, all node types above, CLI, TUI (viewer/runner/editor palette + file watch), HTTP API + SSE, ~90 tests. Roadmap: richer TUI edge routing, per-thread run browser, remote run control from the TUI, provider pricing tables.
+**v0.6** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 224 tests, ruff-clean, Python 3.12+.
+
+*Roadmap: richer TUI edge routing, a run browser, remote run control, provider pricing tables, PyPI publish, more connectors.*
+
+---
+
+<div align="center">
+<sub>Built for engineers who want to orchestrate agents on their own hardware — and describe the pipeline instead of wiring it by hand.</sub>
+</div>
