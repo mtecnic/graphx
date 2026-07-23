@@ -265,7 +265,7 @@ graphx installs from the bundled wheel; its dependencies come from PyPI; credent
 
 ## Status
 
-**v0.7.0** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 250 tests, ruff-clean, Python 3.12+.
+**v0.7.1** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 263 tests, ruff-clean, Python 3.12+.
 
 *Roadmap: richer TUI edge routing, a run browser, remote run control, provider pricing tables, PyPI publish, more connectors.*
 
