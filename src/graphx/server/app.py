@@ -51,13 +51,54 @@ class RunHandle:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-def create_app(workflow_dir: Path | str = ".", db_path: Path | str | None = None) -> FastAPI:
+def create_app(workflow_dir: Path | str = ".", db_path: Path | str | None = None,
+               triggers: bool = True) -> FastAPI:
     workflow_dir = Path(workflow_dir)
     db_path = Path(db_path) if db_path else workflow_dir / ".graphx" / "graphx.db"
     load_builtin_nodes()
 
-    app = FastAPI(title="graphx", version="0.4")
+    from contextlib import asynccontextmanager
+
+    from ..scheduler import Scheduler
+    from ..triggers import load_triggers
+
     runs: dict[str, RunHandle] = {}
+    webhook_index: dict[str, tuple[Path, Any]] = {}   # path -> (workflow, trigger)
+
+    def _fire(workflow: Path, run_input: dict[str, Any]) -> str:
+        thread_id = uuid4().hex[:12]
+        handle = RunHandle(thread_id=thread_id, workflow_path=workflow)
+        handle.task = asyncio.create_task(execute(handle, dict(run_input)))
+        runs[thread_id] = handle
+        return thread_id
+
+    scheduler = Scheduler(fire=lambda wf, inp: _fire_async(wf, inp))
+
+    async def _fire_async(workflow: Path, run_input: dict[str, Any]) -> None:
+        _fire(workflow, run_input)
+
+    def _index_triggers() -> None:
+        for path in sorted(workflow_dir.glob("*.yaml")) + sorted(workflow_dir.glob("*.yml")):
+            try:
+                trigs = load_triggers(path)
+            except Exception:  # noqa: BLE001 — skip non-workflow / bad files
+                continue
+            scheduler.add(path, trigs)
+            for trig in trigs:
+                if trig.type == "webhook":
+                    webhook_index[trig.path] = (path, trig)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if triggers:
+            _index_triggers()
+            scheduler.start()
+        try:
+            yield
+        finally:
+            await scheduler.stop()
+
+    app = FastAPI(title="graphx", version="0.6", lifespan=lifespan)
     app.state.runs = runs
 
     def resolve_workflow(name: str) -> Path:
@@ -124,6 +165,29 @@ def create_app(workflow_dir: Path | str = ".", db_path: Path | str | None = None
         handle.task = asyncio.create_task(execute(handle, dict(body.input)))
         runs[thread_id] = handle
         return {"thread_id": thread_id, "workflow": str(path)}
+
+    @app.post("/hooks/{hook_path:path}", status_code=201)
+    async def webhook(hook_path: str, request: Request) -> dict[str, Any]:
+        entry = webhook_index.get(hook_path.strip("/"))
+        if entry is None:
+            raise HTTPException(404, f"no webhook trigger at '/hooks/{hook_path}'")
+        workflow, trigger = entry
+        run_input = dict(trigger.input)
+        if trigger.input_from == "body":
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    run_input.update(body)
+            except Exception:  # noqa: BLE001 — empty/non-JSON body → static input only
+                pass
+        thread_id = _fire(workflow, run_input)
+        return {"thread_id": thread_id, "workflow": str(workflow),
+                "fired_by": f"webhook /hooks/{hook_path}"}
+
+    @app.get("/schedules")
+    async def schedules() -> dict[str, Any]:
+        return {"scheduled": scheduler.next_fire_times(),
+                "webhooks": [f"/hooks/{p}" for p in sorted(webhook_index)]}
 
     @app.get("/runs/{thread_id}")
     async def run_status(thread_id: str) -> dict[str, Any]:
