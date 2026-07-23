@@ -38,6 +38,8 @@ Most "agent builders" are either web-based node canvases you can't script, or co
 - 🛡️ **Resilience per node** — retries with backoff, model fallback chains, validation re-asks, timeouts, token/cost/deadline budgets, `on_error` edges, dead-letters.
 - 🔐 **Credentials done right** — `secret://NAME` resolves only at the point of use and never leaks into files, checkpoints, logs, SSE, or the screen.
 - 🧩 **Batteries included** — 12 credential-wired connectors (Slack, Discord, Telegram, SendGrid, SMTP, Gmail, GitHub, GitLab, Postgres, S3, webhooks) and OpenAPI auto-scaffolding for anything else.
+- ⏰ **Runs itself** — `triggers:` fire a workflow on a cron schedule, an interval, or an inbound webhook; the `serve` daemon or a systemd timer keeps it going.
+- 📦 **Portable** — `graphx export` turns a workflow into a self-contained folder (bundled wheel + Dockerfile) that runs on any machine, no graphx install required.
 - 📄 **YAML is the source of truth** — layout-free, diffable, hand-editable. The TUI renders it; it never owns it.
 
 ---
@@ -263,7 +265,7 @@ graphx installs from the bundled wheel; its dependencies come from PyPI; credent
 
 ## Status
 
-**v0.7** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 250 tests, ruff-clean, Python 3.12+.
+**v0.7.0** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 250 tests, ruff-clean, Python 3.12+.
 
 *Roadmap: richer TUI edge routing, a run browser, remote run control, provider pricing tables, PyPI publish, more connectors.*
 
