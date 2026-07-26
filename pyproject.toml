@@ -7,7 +7,8 @@ name = "graphx"
 version = "0.7.1"
 description = "TUI-native designer and runner for agentic workflows: graph pipelines with loops, LLM agents, APIs, MCP tools, Python and shell nodes."
 readme = "README.md"
-license = { text = "MIT" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
