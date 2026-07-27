@@ -1,0 +1,50 @@
+version: 1
+name: review_loop
+description: >
+  Write → independent critic review → loop until it passes → publish.
+  The critic uses its own model and fresh context (it only sees the draft
+  + criteria), so it can't rubber-stamp its own writer. Set both models to
+  your own endpoints (see providers).
+
+providers:
+  local: { base_url: "http://localhost:8000/v1", protocol: openai }
+
+config:
+  budget: { tokens: 40000, deadline: 10m }
+
+state:
+  topic:    { type: str, default: "graph databases" }
+  draft:    { type: str, default: "" }
+  feedback: { type: str, default: "" }
+
+entry: [write]
+
+nodes:
+  - id: write
+    type: agent
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    system: "You write tight, factual two-sentence explainers."
+    prompt: "Explain <state.topic> in exactly two sentences. Prior feedback: <state.feedback>"
+    output_schema: { text: str }
+    updates: { draft: "<self.text>" }
+    max_iterations: 3
+    on_exhausted: publish
+
+  - id: review
+    type: critic
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    artifact: "<state.draft>"
+    criteria: "Exactly two sentences, factually correct, no marketing fluff."
+    min_score: 0.8
+    feedback_channel: feedback
+
+  - id: publish
+    type: shell
+    command: ["tee", ".graphx/review_loop.out"]
+    stdin: "<state.draft>"
+
+edges:
+  - { from: write,  to: review }
+  - { from: review, to: publish, when: "review.score >= 0.8" }
+  - { from: review, to: write,   when: "review.score < 0.8" }
+  - { from: publish, to: end }

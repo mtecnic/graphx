@@ -104,6 +104,7 @@ class GraphxApp(App):
         Binding("c", "connect", "connect"),
         Binding("i", "add_connector", "integration"),
         Binding("k", "secrets", "secrets"),
+        Binding("b", "run_browser", "runs"),
         Binding("d", "delete_node", "delete", show=False),
         Binding("p", "play_trace", "play trace", show=False),
     ]
@@ -337,6 +338,15 @@ class GraphxApp(App):
 
     def action_secrets(self) -> None:
         self._open_secrets()
+
+    @work(exclusive=False)
+    async def _open_run_browser(self) -> None:
+        from .palette import RunBrowserScreen
+        await self.push_screen_wait(
+            RunBrowserScreen(self.db_path or Path(".graphx/graphx.db")))
+
+    def action_run_browser(self) -> None:
+        self._open_run_browser()
 
     @work(exclusive=False)
     async def _palette_connector(self) -> None:

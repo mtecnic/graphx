@@ -91,6 +91,26 @@ def validate_graph(graph: Graph, known_types: set[str] | None = None) -> list[Is
                 target = branch.get("goto") or branch.get("else")
                 if target and target not in node_ids and target != END:
                     err(where, f"branches[{i}] -> unknown node '{target}'")
+        # handoff targets + channel must exist
+        for target in node.config.get("handoffs") or []:
+            if target not in node_ids:
+                err(where, f"handoff target '{target}' is not a node")
+            elif graph.nodes[target].max_iterations is None:
+                warn(where, f"handoff target '{target}' has no max_iterations; "
+                            "an agent ping-pong is only bounded by config.max_steps")
+        channel = node.config.get("handoff_channel")
+        if node.config.get("handoffs") and channel and channel not in graph.channels:
+            warn(where, f"handoff_channel '{channel}' is not a declared state channel; "
+                        "the target won't be able to read <state.%s>" % channel)
+        # critic reusing its producer's model gives a weaker, correlated review
+        if node.type == "critic" and node.config.get("model"):
+            for src_edge in graph.edges_to(node.id):
+                producer = graph.nodes.get(src_edge.source)
+                if producer and producer.config.get("model") == node.config["model"]:
+                    warn(where, f"critic uses the same model as its producer "
+                                f"'{producer.id}'; a different model gives a more "
+                                "independent review")
+                    break
 
     # A node with no outgoing edges (and not routing via condition) silently ends
     # its branch; that's legal but worth flagging when it looks accidental.

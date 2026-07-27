@@ -342,6 +342,8 @@ class Executor:
                     output=self._show(settled.result.output),
                     duration_s=round(settled.duration_s, 3),
                     attempts=settled.attempts,
+                    tokens=settled.result.metrics.tokens or None,
+                    cost_usd=round(settled.result.metrics.cost_usd, 6) or None,
                     degraded=settled.result.metrics.degraded or None)
             else:
                 await self.bus.emit(
