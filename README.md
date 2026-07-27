@@ -141,8 +141,8 @@ Every edit writes straight back to the YAML, and the file is watched — edit in
 
 | group | types |
 |---|---|
-| **work** | `agent` (LLM + tools + validated JSON output) · `api` (HTTP + `$.json.path` extraction) · `mcp` (MCP tool call) · `function` (Python) · `shell` (subprocess / CLI agents) |
-| **flow** | `condition` (branch + loop) · `router` (LLM picks the path) · `map` (fan-out over a collection) · `merge` (barrier join with a success threshold) · `subworkflow` |
+| **work** | `agent` (LLM + tools + validated JSON output + **dynamic handoffs**) · `api` (HTTP + `$.json.path` extraction) · `mcp` (MCP tool call) · `function` (Python) · `shell` (subprocess / CLI agents) |
+| **flow** | `condition` (branch + loop) · `router` (LLM picks the path) · `critic` (independent review → loop on evidence) · `map` (fan-out over a collection) · `merge` (barrier join with a success threshold) · `subworkflow` |
 | **control** | `human` (approval gate — interrupts, resumable) · `wait` |
 
 References: `<node.field>`, `<state.key>`, `<item.x>`, `secret://NAME`. Edges carry `when:` expressions. LLM providers are per-workflow — anything OpenAI-compatible plus native Anthropic, no SDKs.
@@ -189,6 +189,50 @@ Stored `0600` in `~/.graphx/secrets.json` (or the OS keyring via the `[keyring]`
 - **Guards** — four independent stops: max steps, token budget, cost budget, wall-clock deadline.
 - **Checkpoint & resume** — full state snapshot to SQLite every superstep. `kill -9` a run; `graphx resume <thread>` continues exactly where it stopped.
 - **Human-in-the-loop** — a `human` node interrupts and persists; resume from the CLI, TUI, or API.
+
+---
+
+## Agents that check themselves — and hand off
+
+Two building blocks for multi-agent workflows, both pure flow/state/logic — no engine changes, no hidden control channels:
+
+- **`critic` — self-review that can't rubber-stamp.** An independent judge scored against explicit criteria in a *fresh context*: it only ever sees the artifact + the criteria, never the producing agent's conversation, so the same model can't quietly grade its own work. Use a different model (or a deterministic `handler:`) for a truly independent review. The verdict routes like any other decision — loop back to revise on `fail`, publish on `pass` — bounded by the producer's `max_iterations`:
+
+  ```yaml
+  - { from: review, to: publish, when: "review.verdict == 'pass'" }
+  - { from: review, to: write,   when: "review.score < 0.8" }
+  ```
+
+- **Dynamic handoffs — agent-to-agent transfer at runtime.** Give an `agent` a `handoffs:` list and it gets one synthetic tool per target; when it calls one, control *and the full conversation* transfer to the specialist, which reads the context from `<state.handoff.reason>` / `<state.handoff.messages>`. Unlike `router` (routes with no context), a handoff carries the working memory over — and stays bounded by the same step/iteration guards.
+
+See `examples/review_loop.yaml` (write → critic → loop → publish) and `examples/handoff.yaml` (triage → specialist).
+
+---
+
+## See what your runs actually did — eval & ops
+
+A **read-only** observer over the same events + checkpoints every run already writes — it never touches the execution path, state, or routing.
+
+```bash
+graphx runs                          # every past run: status · cost · latency · steps
+graphx run-show <thread>             # per-node tokens, cost, latency, retries, interventions
+graphx eval flow.yaml cases.yaml     # replay a dataset, assert outcomes (exit 1 on any fail)
+graphx eval-compare cases.yaml --a v1.yaml --b v2.yaml   # diff two versions: outcomes, metrics, trace
+```
+
+Eval datasets combine a deterministic backbone with an optional LLM judge (reusing the `critic`):
+
+```yaml
+cases:
+  - name: named
+    input: { name: graphx }
+    expect:
+      status: finished
+      assert: ["shouts == ['HELLO,', 'GRAPHX!']"]
+      budget: { tokens: 100 }
+```
+
+Golden-trace normalization strips volatile noise (timings, tokens, values) so two runs of the same graph diff cleanly — behavioral regressions show up, run-to-run jitter doesn't. Browse past runs in the TUI with `b`.
 
 ---
 
@@ -258,21 +302,24 @@ graphx installs from the bundled wheel; its dependencies come from PyPI; credent
 | `examples/email_triage.yaml` | Classify inbox mail and draft replies on your own model, behind a human gate |
 | `examples/agent_demo.yaml` | Minimal live-LLM demo — agent writes, router branches on the result |
 | `examples/approval.yaml` | Human-in-the-loop gate: draft → approve → publish |
+| `examples/review_loop.yaml` | Self-review: write → independent `critic` → loop until it passes → publish |
+| `examples/handoff.yaml` | Dynamic handoff — triage agent transfers control + context to a specialist |
+| `examples/hello.eval.yaml` | An eval dataset for `hello.yaml` — deterministic assertions + budget |
 | `examples/scheduled_report.yaml` | Triggers demo — runs daily on a cron and on a webhook |
 
 ---
 
 ## CLI reference
 
-`generate` · `edit` · `new` · `connectors` · `add` · `providers [--scan|--add <url>]` · `secret set/list/rm` · `scaffold-api` · `schedule` · `export` · `validate` · `run` · `resume` · `events` · `history` · `tui` · `serve`
+`generate` · `edit` · `new` · `connectors` · `add` · `providers [--scan|--add <url>]` · `secret set/list/rm` · `scaffold-api` · `schedule` · `export` · `validate` · `run` · `resume` · `events` · `history` · `runs` · `run-show` · `eval` · `eval-compare` · `tui` · `serve`
 
 ---
 
 ## Status
 
-**v0.7.1** — engine, all node types, natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor), HTTP API + SSE. 263 tests, ruff-clean, Python 3.12+.
+**v0.7.1** — engine, all node types (incl. `critic` self-review + agent handoffs), eval/ops layer (replay · assert · compare · per-node cost/latency), natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor + run browser), HTTP API + SSE. 283 tests, ruff-clean, Python 3.12+.
 
-*Roadmap: richer TUI edge routing, a run browser, remote run control, provider pricing tables, PyPI publish, more connectors.*
+*Roadmap: richer TUI edge routing, remote run control, provider pricing tables, PyPI publish, more connectors.*
 
 ---
 

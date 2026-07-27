@@ -684,6 +684,118 @@ def history(thread: Annotated[str, typer.Argument(help="thread id")],
         console.print_json(json.dumps(latest.state, default=str))
 
 
+@app.command()
+def runs(limit: Annotated[int, typer.Option(help="max runs to list")] = 30,
+         workflow: Annotated[str | None, typer.Option(help="filter by workflow name")] = None,
+         db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
+         ) -> None:
+    """List past runs with status, cost, and duration (ops view)."""
+    from .eval.metrics import derive_run_report
+    from .eval.store import EventStore
+
+    async def fetch():
+        conn = await open_db(db or default_db_path())
+        try:
+            store = EventStore(conn)
+            rows = await store.list_runs(limit=limit, workflow=workflow)
+            out = []
+            for r in rows:
+                events = await store.run_events(r.run_id)
+                rep = derive_run_report(events, await store.run_metrics(r.run_id))
+                out.append((r, rep))
+            return out
+        finally:
+            await conn.close()
+
+    items = asyncio.run(fetch())
+    if not items:
+        console.print("[yellow]no runs recorded[/yellow]")
+        raise typer.Exit(code=1)
+    for r, rep in items:
+        style, _ = _STATUS_STYLE.get(EventType.RUN_FINISHED if rep.status == "finished"
+                                     else EventType.RUN_FAILED, ("dim", ""))
+        console.print(f"[{style}]●[/{style}] [bold]{r.thread_id}[/bold]  {r.workflow}  "
+                      f"[dim]{rep.status} · {rep.duration_s:g}s · {rep.tokens} tok · "
+                      f"${rep.cost_usd:g} · {rep.steps} steps[/dim]")
+
+
+@app.command("run-show")
+def run_show(run: Annotated[str, typer.Argument(help="run id or thread id")],
+             db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
+             ) -> None:
+    """Show per-node metrics for one run."""
+    from .eval.metrics import derive_run_report
+    from .eval.store import EventStore
+
+    async def fetch():
+        conn = await open_db(db or default_db_path())
+        try:
+            store = EventStore(conn)
+            events = await store.run_events(run)
+            return derive_run_report(events, await store.run_metrics(run))
+        finally:
+            await conn.close()
+
+    rep = asyncio.run(fetch())
+    if not rep.per_node and rep.status == "running" and not rep.tokens:
+        console.print("[yellow]no such run[/yellow]")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]{rep.workflow}[/bold] · {rep.status} · {rep.duration_s:g}s · "
+                  f"{rep.tokens} tok · ${rep.cost_usd:g} · {rep.steps} steps · "
+                  f"{rep.interventions} interventions · {rep.dead_letters} dead-letters")
+    for n in rep.per_node:
+        console.print(f"  [bold]{n.node_id}[/bold]  [dim]{n.latency_s:g}s · "
+                      f"{n.tokens} tok · ${n.cost_usd:g} · {n.attempts} attempts"
+                      + (f" · {n.retries} retries" if n.retries else "")
+                      + (f" · {n.fallbacks} fallbacks" if n.fallbacks else "")
+                      + (f" · {n.failures} failures" if n.failures else "") + "[/dim]")
+
+
+@app.command()
+def eval(workflow: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+         dataset: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+         db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
+         as_json: Annotated[bool, typer.Option("--json")] = False,
+         ) -> None:
+    """Run an eval dataset against a workflow; report pass/fail + metrics."""
+    from dataclasses import asdict
+
+    from .eval.dataset import load_dataset
+    from .eval.runner import run_dataset
+
+    graph = _load(workflow)
+    ds = load_dataset(dataset)
+    report, _ = asyncio.run(run_dataset(graph, ds, db or default_db_path()))
+    if as_json:
+        print(json.dumps({"dataset": report.dataset, "workflow": report.workflow,
+                          "passed": report.passed, "failed": report.failed,
+                          "cases": [{"name": c.name, "passed": c.passed,
+                                     "checks": [asdict(k) for k in c.checks],
+                                     "metrics": asdict(c.metrics)} for c in report.cases]},
+                         default=str, indent=2))
+    else:
+        report.render(console)
+    if report.failed:
+        raise typer.Exit(code=1)
+
+
+@app.command("eval-compare")
+def eval_compare(dataset: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+                 a: Annotated[Path, typer.Option("--a", exists=True, dir_okay=False)],
+                 b: Annotated[Path, typer.Option("--b", exists=True, dir_okay=False)],
+                 db: Annotated[Path | None, typer.Option(help="SQLite db path")] = None,
+                 ) -> None:
+    """Run the same dataset against two workflow versions and diff them."""
+    from .eval.compare import compare
+    from .eval.dataset import load_dataset
+
+    graph_a, graph_b = _load(a), _load(b)
+    ds = load_dataset(dataset)
+    report = asyncio.run(compare(ds, graph_a, graph_b, db or default_db_path(),
+                                 label_a=a.stem, label_b=b.stem))
+    report.render(console)
+
+
 def _default_workflow() -> Path:
     """Bare `graphx tui`: prefer a workflow in cwd, else the bundled demo."""
     candidates = sorted(Path(".").glob("*.yaml")) + sorted(Path(".").glob("*.yml"))

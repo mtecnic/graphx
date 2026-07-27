@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError, create_model
 
 from ..engine.errors import ConfigError, GraphxError, ValidationFailed
+from ..llm.client import ToolDef
 from ..llm.tools import resolve_tools, tool_result_to_text
 from .registry import NodeContext, NodeMetrics, NodeResult, node_type
 
@@ -33,6 +34,11 @@ class AgentConfig(BaseModel):
     max_tool_rounds: int = 5
     temperature: float | None = None
     max_tokens: int | None = None
+    handoffs: list[str] = Field(default_factory=list)   # target node ids to hand off to
+    handoff_channel: str = "handoff"                    # state channel for transferred context
+
+
+HANDOFF_PREFIX = "handoff_to_"
 
 
 def build_schema_model(schema: dict[str, str]) -> type[BaseModel]:
@@ -81,6 +87,17 @@ async def agent_node(ctx: NodeContext) -> NodeResult:
     tool_defs = [t.definition for t in tools]
     by_name = {t.definition.name: t for t in tools}
 
+    # synthetic handoff tools: calling one transfers control + this conversation
+    # to a specialist node (flow=goto, data=state channel, logic=here).
+    for target in config.handoffs:
+        tool_defs.append(ToolDef(
+            name=f"{HANDOFF_PREFIX}{target}",
+            description=f"Transfer this task and conversation to '{target}' to continue.",
+            parameters={"type": "object",
+                        "properties": {"reason": {"type": "string",
+                                                  "description": "why you are handing off"}},
+                        "required": ["reason"]}))
+
     metrics = NodeMetrics()
     budget = ctx.node.resilience.budget
 
@@ -108,6 +125,18 @@ async def agent_node(ctx: NodeContext) -> NodeResult:
         if rounds > config.max_tool_rounds:
             raise GraphxError(f"agent '{ctx.node.id}' exceeded max_tool_rounds "
                               f"({config.max_tool_rounds})")
+        # a handoff short-circuits the loop: transfer control + this conversation
+        for call in response.tool_calls:
+            if call.name.startswith(HANDOFF_PREFIX):
+                target = call.name[len(HANDOFF_PREFIX):]
+                reason = call.arguments.get("reason", "") if isinstance(
+                    call.arguments, dict) else ""
+                context = {"messages": messages, "reason": reason,
+                           "from": ctx.node.id, "artifact": response.text or ""}
+                return NodeResult(
+                    output={"handoff_to": target, "reason": reason},
+                    updates={config.handoff_channel: context},
+                    goto=(target,), metrics=metrics)
         messages.append({"role": "assistant", "content": response.text or None,
                          "tool_calls": [{"id": c.id, "type": "function", "function": {
                              "name": c.name, "arguments": json.dumps(c.arguments)}}

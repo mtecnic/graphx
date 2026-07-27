@@ -121,5 +121,5 @@ def known_types() -> set[str]:
 def load_builtin_nodes() -> None:
     """Import built-in node modules so their decorators run."""
     from . import (  # noqa: F401
-        agent, api, flow, function, human, mcp, router, shell, subworkflow,
+        agent, api, critic, flow, function, human, mcp, router, shell, subworkflow,
     )

@@ -1,0 +1,19 @@
+version: 1
+dataset: hello-smoke
+# Eval the LLM-free hello.yaml: deterministic assertions only.
+cases:
+  - name: default_world
+    input: {}
+    expect:
+      status: finished
+      no_dead_letters: true
+      assert:
+        - "count == 3"
+        - "shouts == ['HELLO,', 'WORLD!']"
+      budget: { tokens: 100 }
+  - name: named
+    input: { name: graphx }
+    expect:
+      status: finished
+      assert:
+        - "shouts == ['HELLO,', 'GRAPHX!']"

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from pathlib import Path
+
 from ruamel.yaml import YAML
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, OptionList, TextArea
+from textual.widgets import Button, Input, Label, OptionList, RichLog, TextArea
 from textual.widgets.option_list import Option
 
 _MODAL_CSS = """
@@ -435,6 +438,70 @@ class SecretsScreen(ModalScreen[None]):
             self.store.delete(event.option.id)
             self._refresh()
             self.notify(f"removed {event.option.id}")
+
+
+class RunBrowserScreen(ModalScreen[None]):
+    """Browse past runs from SQLite; select one to see per-node metrics."""
+
+    DEFAULT_CSS = _MODAL_CSS + """
+    #run-list { height: 12; }
+    #run-detail { height: 12; border: round $secondary; }
+    """
+
+    def __init__(self, db_path: Path):
+        super().__init__()
+        self.db_path = db_path
+        self._runs: list = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Label("[bold]past runs[/bold]  [dim](select to inspect)[/dim]")
+            yield OptionList(id="run-list")
+            yield RichLog(id="run-detail", markup=True, wrap=True)
+            with Horizontal(id="modal-buttons"):
+                yield Button("close", id="close")
+        self._load()
+
+    @work(exclusive=True)
+    async def _load(self) -> None:
+        from ..eval.metrics import derive_run_report
+        from ..eval.store import EventStore
+        from ..persistence.db import open_db
+        conn = await open_db(self.db_path)
+        try:
+            store = EventStore(conn)
+            rows = await store.list_runs(limit=50)
+            self._runs = []
+            options = []
+            for r in rows:
+                rep = derive_run_report(await store.run_events(r.run_id),
+                                        await store.run_metrics(r.run_id))
+                self._runs.append((r, rep))
+                options.append(Option(
+                    f"{rep.status:10} {r.workflow:16} {rep.duration_s:>5.1f}s "
+                    f"{rep.tokens:>6} tok  ${rep.cost_usd:g}", id=r.thread_id))
+        finally:
+            await conn.close()
+        ol = self.query_one("#run-list", OptionList)
+        ol.clear_options()
+        ol.add_options(options or [Option("(no runs)", id="__none__")])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        detail = self.query_one("#run-detail", RichLog)
+        detail.clear()
+        match = next((rep for r, rep in self._runs if r.thread_id == event.option.id), None)
+        if match is None:
+            return
+        detail.write(f"[bold]{match.workflow}[/bold] · {match.status} · "
+                     f"{match.duration_s:g}s · {match.tokens} tok · ${match.cost_usd:g}")
+        for n in match.per_node:
+            detail.write(f"  {n.node_id}: {n.latency_s:g}s · {n.tokens} tok · "
+                         f"{n.attempts} attempts"
+                         + (f" · {n.retries} retries" if n.retries else "")
+                         + (f" · {n.failures} failures" if n.failures else ""))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
 
 
 class ConfirmScreen(ModalScreen[bool]):

@@ -1,0 +1,43 @@
+version: 1
+name: handoff
+description: >
+  Dynamic agent-to-agent handoff. The triage agent inspects the request and
+  transfers control + the full conversation to a specialist by calling a
+  synthetic handoff tool. The specialist reads the transferred context from
+  the `handoff` state channel and answers. Set models to your own endpoints.
+
+providers:
+  local: { base_url: "http://localhost:8000/v1", protocol: openai }
+
+config:
+  budget: { tokens: 40000, deadline: 10m }
+
+state:
+  request: { type: str, default: "" }
+  handoff: { type: dict, default: {} }
+
+entry: [triage]
+
+nodes:
+  - id: triage
+    type: agent
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    system: >
+      You are a triage router. You do NOT answer questions yourself. For any
+      SQL or database question, immediately call handoff_to_sql with a short
+      reason. Do not write an answer.
+    prompt: "<state.request>"
+    handoffs: [sql]
+    max_iterations: 2
+
+  - id: sql
+    type: agent
+    model: "local//app/models/cyankiwi--Qwen3.6-27B-AWQ-INT4"
+    system: "You are a senior SQL engineer. Answer concisely."
+    prompt: >
+      A colleague handed this off to you. Reason: <state.handoff.reason>
+      Original request: <state.request>
+    max_iterations: 2
+
+edges:
+  - { from: sql, to: end }
