@@ -11,7 +11,7 @@ A TUI-native designer and runner for agentic workflows: flow-chart pipelines wit
 ![python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 ![tests](https://img.shields.io/badge/tests-263%20passing-brightgreen)
-![status](https://img.shields.io/badge/version-0.7.1-blue)
+![status](https://img.shields.io/badge/version-0.8.0-blue)
 
 </div>
 
@@ -317,7 +317,7 @@ graphx installs from the bundled wheel; its dependencies come from PyPI; credent
 
 ## Status
 
-**v0.7.1** — engine, all node types (incl. `critic` self-review + agent handoffs), eval/ops layer (replay · assert · compare · per-node cost/latency), natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor + run browser), HTTP API + SSE. 283 tests, ruff-clean, Python 3.12+.
+**v0.8.0** — engine, all node types (incl. `critic` self-review + agent handoffs), eval/ops layer (replay · assert · compare · per-node cost/latency), natural-language builder (both engines) + point-at-any-endpoint, triggers/scheduling (cron · interval · webhook + systemd/crontab), export-to-portable-program, 12 connectors, secrets, discovery, templates, OpenAPI scaffolding, TUI (designer + runner + editor + run browser), HTTP API + SSE. 283 tests, ruff-clean, Python 3.12+.
 
 *Roadmap: richer TUI edge routing, remote run control, provider pricing tables, PyPI publish, more connectors.*
 
