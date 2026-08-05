@@ -317,13 +317,13 @@ def _endpoints_quick() -> list:
 @app.command()
 def new(name: Annotated[str, typer.Argument(help="workflow name → NAME.yaml")],
         template: Annotated[str, typer.Option("--template", "-t",
-                                              help="blank | agent | approval | pipeline")] = "blank",
+                                              help="template key (any unknown value lists them all)")] = "blank",
         tui_open: Annotated[bool, typer.Option("--tui", help="open the TUI on it")] = False,
         force: Annotated[bool, typer.Option(help="overwrite an existing file")] = False,
         ) -> None:
-    """Create a new workflow from a template (agent template auto-fills
-    a discovered local/LAN inference server)."""
-    from .templates import TEMPLATES, create_workflow
+    """Create a new workflow from a template (LLM templates auto-fill a
+    discovered local/LAN inference server and scaffold a NAME.eval.yaml)."""
+    from .templates import TEMPLATES, create_workflow, eval_path_for
 
     if template not in TEMPLATES:
         console.print(f"[red]unknown template '{template}'[/red] — available:")
@@ -340,6 +340,10 @@ def new(name: Annotated[str, typer.Argument(help="workflow name → NAME.yaml")]
 
     console.print(f"[green]✔[/green] created [bold]{path}[/bold] "
                   f"(template: {template})")
+    eval_path = eval_path_for(path)
+    if TEMPLATES[template].eval_body and eval_path.exists():
+        console.print(f"  eval scaffold: [bold]{eval_path}[/bold] — run: "
+                      f"[bold]graphx eval {path} {eval_path}[/bold]")
     if TEMPLATES[template].needs_llm:
         if endpoints:
             from .llm.discovery import best_endpoint

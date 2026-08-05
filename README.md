@@ -117,6 +117,22 @@ It's an editable first draft, not an oracle — quality scales with your model, 
 
 ---
 
+## Start from a template
+
+```bash
+graphx new mybot -t review        # → mybot.yaml + mybot.eval.yaml, model auto-filled
+```
+
+Eleven starters in three tiers (`n` in the TUI). LLM templates wire themselves to a discovered local/LAN inference server **and scaffold a paired `NAME.eval.yaml`**, so every workflow starts life with an eval harness.
+
+| | template | shape |
+|---|---|---|
+| starters | `blank` `agent` `approval` `pipeline` | one concept each: shell · LLM w/ tool + schema + fallback · human gate · api loop |
+| patterns | `review` `fanout` `triage` | evaluator-optimizer (fresh-context `critic`) · parallel map + synthesize · LLM routing w/ escalation |
+| real world | `inbox` `digest` `issueops` `watchdog` | local-model email triage · cron→fetch→LLM→Slack · GitHub webhook→draft→gate→comment · LLM-free interval health check |
+
+---
+
 ## Design & run in the TUI
 
 ```bash

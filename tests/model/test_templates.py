@@ -63,6 +63,42 @@ class TestTemplates:
             with pytest.raises(ValueError):
                 create_workflow(bad, "blank", directory=tmp_path)
 
+    def test_agent_template_has_a_tool(self, tmp_path: Path):
+        path = create_workflow("bot", "agent", directory=tmp_path,
+                               endpoints=[endpoint()])
+        graph = load_graph(path)
+        tools = graph.nodes["think"].config["tools"]
+        assert tools and tools[0]["function"] == "graphx.demo:sysinfo"
+
+
+class TestEvalScaffold:
+    EVAL_KEYS = [k for k, t in TEMPLATES.items() if t.eval_body]
+
+    @pytest.mark.parametrize("key", EVAL_KEYS)
+    def test_llm_templates_scaffold_a_loadable_eval(self, key, tmp_path: Path):
+        from graphx.eval.dataset import load_dataset
+        create_workflow("my_flow", key, directory=tmp_path,
+                        endpoints=[endpoint()])
+        eval_path = tmp_path / "my_flow.eval.yaml"
+        assert eval_path.exists()
+        dataset = load_dataset(eval_path)
+        assert dataset.dataset == "my_flow"
+        assert dataset.cases
+
+    def test_blank_scaffolds_no_eval(self, tmp_path: Path):
+        create_workflow("my_flow", "blank", directory=tmp_path)
+        assert not (tmp_path / "my_flow.eval.yaml").exists()
+
+    def test_existing_eval_kept_without_force(self, tmp_path: Path):
+        eval_path = tmp_path / "my_flow.eval.yaml"
+        eval_path.write_text("mine")
+        create_workflow("my_flow", "agent", directory=tmp_path,
+                        endpoints=[endpoint()])
+        assert eval_path.read_text() == "mine"
+        create_workflow("my_flow", "agent", directory=tmp_path,
+                        endpoints=[endpoint()], force=True)
+        assert eval_path.read_text() != "mine"
+
 
 class TestNewCommand:
     def test_new_blank_via_cli(self, tmp_path: Path, monkeypatch):
@@ -77,6 +113,15 @@ class TestNewCommand:
         result = CliRunner().invoke(cli_app, ["new", "x", "--template", "nope"])
         assert result.exit_code == 1
         assert "blank" in result.output and "agent" in result.output
+        assert "review" in result.output and "watchdog" in result.output
+
+    def test_new_llm_template_mentions_eval_scaffold(self, tmp_path: Path,
+                                                     monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli_app, ["new", "bot", "-t", "review"])
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "bot.eval.yaml").exists()
+        assert "bot.eval.yaml" in result.output
 
     def test_new_duplicate_fails_without_force(self, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(tmp_path)
