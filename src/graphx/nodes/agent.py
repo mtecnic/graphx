@@ -165,7 +165,10 @@ async def agent_node(ctx: NodeContext) -> NodeResult:
             parsed = extract_json(response.text)
             validated = schema_model.model_validate(parsed)
             output = validated.model_dump()
-            output["text"] = response.text
+            # raw response under "text" only when the schema doesn't claim
+            # that key — a validated field must never be clobbered by the
+            # raw JSON blob it was parsed from
+            output.setdefault("text", response.text)
             return NodeResult(output=output, metrics=metrics)
         except (ValueError, ValidationError) as exc:
             last_error = str(exc)

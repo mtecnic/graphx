@@ -48,6 +48,33 @@ class TestAgent:
         # second call contained the validation feedback
         assert "failed validation" in llm.calls[1]["messages"][-1]["content"]
 
+    async def test_schema_text_field_not_clobbered_by_raw_response(self):
+        # regression: with output_schema {text: str}, the validated value
+        # must win over the raw JSON blob it was parsed from
+        llm = ScriptedLLM(['{"text": "the answer"}'])
+        h = Harness(graph(
+            [node("a", type="agent", model="ollama/fake", prompt="p",
+                  output_schema={"text": "str"})],
+            [edge("a", "end")], entry=["a"],
+        ), services=llm_services(llm))
+        outcome = await h.run()
+        assert outcome.status == "finished"
+        output = h.events_of("node_finished")[0].data["output"]
+        assert output["text"] == "the answer"
+
+    async def test_raw_response_kept_when_schema_has_no_text_field(self):
+        llm = ScriptedLLM(['{"title": "T"}'])
+        h = Harness(graph(
+            [node("a", type="agent", model="ollama/fake", prompt="p",
+                  output_schema={"title": "str"})],
+            [edge("a", "end")], entry=["a"],
+        ), services=llm_services(llm))
+        outcome = await h.run()
+        assert outcome.status == "finished"
+        output = h.events_of("node_finished")[0].data["output"]
+        assert output["title"] == "T"
+        assert output["text"] == '{"title": "T"}'
+
     async def test_schema_exhaustion_falls_back_to_next_model(self):
         llm = ScriptedLLM(by_model={
             "ollama/bad": ["junk", "still junk", "never json"],
